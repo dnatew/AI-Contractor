@@ -50,7 +50,7 @@ export default async function ProjectPage({
             {project.photos.length} photos
           </span>
           <span className="px-2 py-1 rounded bg-slate-100 text-slate-600">
-            {project.scopes.reduce((acc, s) => acc + s.items.length, 0)} scope items
+            {project.scopes.reduce((acc: number, s) => acc + s.items.length, 0)} scope items
           </span>
           {project.estimates[0] && (
             <span className="px-2 py-1 rounded bg-slate-100 text-slate-600">

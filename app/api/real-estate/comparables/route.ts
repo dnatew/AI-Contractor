@@ -360,7 +360,7 @@ Focus on percentage-based value add — it's universal across markets.`;
   }
 
   const manualComparables = userComps
-    .filter((c) => c.purchasePrice > 0 || c.salePrice > 0 || c.price > 0)
+    .filter((c) => (c.purchasePrice ?? 0) > 0 || (c.salePrice ?? 0) > 0 || c.price > 0)
     .map((c) => {
       const displayPrice = c.salePrice && c.salePrice > 0
         ? c.salePrice

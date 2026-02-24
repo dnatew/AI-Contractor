@@ -12,6 +12,7 @@
     "@auth/prisma-adapter": "^2.11.1",
     "@aws-sdk/client-s3": "^3.996.0",
     "@aws-sdk/s3-request-presigner": "^3.996.0",
+    "@neondatabase/serverless": "^1.0.2",
     "@prisma/client": "^6.19.2",
     "@react-pdf/renderer": "^4.3.2",
     "@types/leaflet": "^1.9.21",
