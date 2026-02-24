@@ -1,0 +1,253 @@
+// AI Invoice Maker - Prisma Schema
+// Uses PostgreSQL. For local dev: npx prisma dev (runs Postgres) or set DATABASE_URL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  image         String?
+  emailVerified DateTime?
+  accounts      Account[]
+  sessions      Session[]
+  projects      Project[]
+  pricing       UserPricing[]
+  properties    UserProperty[]
+  flipSearches  FlipSearch[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model Account {
+  userId            String
+  id                String   @id @default(cuid())
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Project {
+  id              String   @id @default(cuid())
+  userId          String
+  address         String
+  province        String
+  sqft            String
+  propertyType    String?
+  neighborhoodTier String? // "low_end" | "decent" | "upscale"
+  addressDetails  String?  // Full formatted address for location context
+  latitude        Float?   // Geocoded lat from address
+  longitude       Float?   // Geocoded lng from address
+  workTypes       String?  // Comma-separated: "flooring,kitchen,painting"
+  rooms           String?  // Comma-separated: "kitchen,living_room,bathroom"
+  materialGrade   String?  // "budget" | "mid_range" | "premium"
+
+  notes       String?
+  jobPrompt   String?
+
+  photos      Photo[]
+  scopes      Scope[]
+  estimates   Estimate[]
+  flipSearches FlipSearch[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model FlipSearch {
+  id               String   @id @default(cuid())
+  userId           String
+  projectId        String
+  title            String?
+  purchasePrice    Float    @default(0)
+  salePrice        Float    @default(0)
+  renoCost         Float    @default(0)
+  holdingMonths    Int      @default(0)
+  monthlyMortgage  Float    @default(0)
+  monthlyTaxes     Float    @default(0)
+  monthlyInsurance Float    @default(0)
+  monthlyUtilities Float    @default(0)
+  realtorPct       Float    @default(0)
+  legalFees        Float    @default(0)
+  staging          Float    @default(0)
+  userNotes        String?
+  aiReasoning      String?
+  comparablesFound String?
+  marketType       String?
+  roiPatternJson   Json?
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, projectId])
+  @@index([projectId, createdAt])
+}
+
+model Photo {
+  id          String   @id @default(cuid())
+  projectId   String
+  url         String
+  roomLabel   String?
+  userNotes   String?  // User description: "damaged vinyl near island"
+  aiTags      Json?    // { room, surfaceType, condition, tasks[], materials[] }
+  aiConfidence Float?
+
+  createdAt   DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model Scope {
+  id          String   @id @default(cuid())
+  projectId   String
+  name        String   // e.g. "Kitchen", "Stage 1", "Main Floor"
+  description String?
+  order       Int      @default(0)
+
+  items ScopeItem[]
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model ScopeItem {
+  id             String   @id @default(cuid())
+  scopeId        String
+  segment        String   // e.g. "Kitchen", "Living Room"
+  task           String   // e.g. "Remove vinyl plank"
+  material       String
+  quantity       Float
+  unit           String   // e.g. "sqft", "linear ft"
+  source         String   // "AI" | "user"
+  laborHours     Float?
+  progressPercent Int     @default(0) // 0-100, how complete
+
+  estimateLines EstimateLine[]
+
+  scope Scope @relation(fields: [scopeId], references: [id], onDelete: Cascade)
+
+  @@index([scopeId])
+}
+
+model EstimateLine {
+  id               String  @id @default(cuid())
+  estimateId       String
+  scopeItemId      String
+  laborCost        Float
+  materialCost     Float
+  markup           Float
+  tax              Float
+  laborHours       Float?
+  laborRate        Float?
+  materialUnitCost Float?
+  quantity         Float?
+  unit             String?
+  materialName     String?
+  pricingSource    String?  // "user" | "default"
+
+  scopeItem ScopeItem @relation(fields: [scopeItemId], references: [id], onDelete: Cascade)
+  estimate Estimate  @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+
+  @@index([estimateId])
+}
+
+model Estimate {
+  id                 String   @id @default(cuid())
+  projectId          String
+  status             String   // "draft" | "sealed"
+  totalLabor         Float
+  totalMaterial      Float
+  totalMarkup        Float
+  totalTax           Float
+  grandTotal         Float
+  confirmedAmount    Float?   // User-set confirmed quote
+  assumptions        Json?    // { laborRate, taxRate, etc }
+  generatedNarrative String?
+  exportedPdfUrl     String?
+  sealedAt           DateTime?
+
+  lines       EstimateLine[]
+  project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([projectId, status])
+}
+
+model UserPricing {
+  id        String   @id @default(cuid())
+  userId    String
+  key       String   // e.g. "flooring_sqft", "walls_sqft", "tiling_sqft", "drywall_taping_sqft"
+  rate      Float
+  unit      String   @default("sqft")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, key])
+  @@index([userId])
+}
+
+model UserProperty {
+  id            String   @id @default(cuid())
+  userId        String
+  description   String
+  purchasePrice Float    @default(0)
+  purchaseDate  String?
+  salePrice     Float    @default(0)
+  saleDate      String?
+  sqft          Int      @default(0)
+  features      String   @default("") // Comma-separated feature keys
+  renoWork      String?
+  notes         String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
