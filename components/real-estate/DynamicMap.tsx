@@ -15,7 +15,7 @@ const ComparablesMap = dynamic(
   }
 );
 
-export function DynamicComparablesMap({ pins }: { pins: MapPin[] }) {
+export function DynamicComparablesMap({ pins, height }: { pins: MapPin[]; height?: number }) {
   if (!pins.length) return null;
-  return <ComparablesMap pins={pins} />;
+  return <ComparablesMap pins={pins} height={height} />;
 }

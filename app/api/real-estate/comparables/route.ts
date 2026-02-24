@@ -68,6 +68,13 @@ export async function POST(req: NextRequest) {
   }
 
   const clarifications: Record<string, string> = body.clarifications ?? {};
+  const currentPurchasePrice: number | undefined = typeof body.currentPurchasePrice === "number"
+    ? body.currentPurchasePrice
+    : undefined;
+  const purchasePosition: "underpaid" | "fair" | "overpaid" | undefined =
+    body.purchasePosition === "underpaid" || body.purchasePosition === "fair" || body.purchasePosition === "overpaid"
+      ? body.purchasePosition
+      : undefined;
   const userComps: Array<{
     description: string;
     price: number;
@@ -155,7 +162,7 @@ export async function POST(req: NextRequest) {
         if (c.renoWork) line += `\n   Renovation done: ${c.renoWork}`;
         if (c.notes) line += `\n   Notes: ${c.notes}`;
         return line;
-      }).join("\n")}\n\n→ CRITICAL ANALYSIS INSTRUCTIONS:\n   - Properties with BOTH purchase and sale prices show REAL equity gained. This is the most valuable data.\n   - If renovation was done between purchase and sale, the equity gained = renovation impact + market appreciation.\n   - Compare properties against each other: differences in features (garage, reno, size) explain price differences.\n   - Use these REAL transactions to estimate the CURRENT project's renovation value.\n   - Include buy/sell equity calculations and feature comparisons in the "adjustments" array.`
+      }).join("\n")}\n\n→ CRITICAL ANALYSIS INSTRUCTIONS:\n   - Properties with BOTH purchase and sale prices show REAL equity gained. This is the most valuable data.\n   - If renovation was done between purchase and sale, the equity gained = renovation impact + market appreciation.\n   - Compare properties against each other: differences in features (garage, reno, size) explain price differences.\n   - Use these REAL transactions to estimate the CURRENT project's renovation value.\n   - Include buy/sell equity calculations and feature comparisons in the "adjustments" array.\n   - Treat these user-entered properties as MORE ACTIONABLE than listing-derived renovated/unrenovated tags.\n   - In final ordering, USER properties should appear first; market-found comparables are secondary reference.`
     : "";
 
   const prompt = `You are a Canadian real estate analyst. Estimate the REALISTIC value impact of a renovation project.
@@ -210,6 +217,8 @@ PROJECT:
 - Address: ${project.address}${project.addressDetails ? ` (${project.addressDetails})` : ""}
 - Province: ${project.province}${coordsContext}
 - Square footage: ${project.sqft} sqft
+- Current purchase price: ${currentPurchasePrice && currentPurchasePrice > 0 ? `$${currentPurchasePrice.toLocaleString()} CAD` : "not provided"}
+- Purchase quality vs neighbourhood: ${purchasePosition ?? "not provided"}
 - Job description: ${project.jobPrompt ?? "Not specified"}
 - Neighborhood: ${project.neighborhoodTier ? project.neighborhoodTier.replace(/_/g, " ") : "not specified"}
 
@@ -217,6 +226,15 @@ SCOPE OF WORK (${allItems.length} items, ~${totalLaborHours.toFixed(0)} total la
 ${scopeSummary || "No scope items yet."}
 
 ${quotedCost ? `RENOVATION COST: $${quotedCost.toFixed(0)} CAD` : ""}
+${currentPurchasePrice && quotedCost ? `\n(For context: purchase + reno = $${(currentPurchasePrice + quotedCost).toLocaleString()} CAD)` : ""}
+
+${purchasePosition ? `PURCHASE POSITION GUIDANCE:
+- underpaid: entry was below neighbourhood-normal pricing. Account for extra upside and stronger margin.
+- fair: entry was near market pricing. Use normal upside assumptions.
+- overpaid: entry was above neighbourhood-normal pricing. Be conservative on ARV and margin; renovation may recover less than expected.
+
+ROI ANCHOR RULE:
+- If user manual flip data exists, assume the current purchase price should trend toward a similar ROI pattern as those manual flips, unless local same-size/same-feature comps strongly contradict it.` : ""}
 
 ${clarificationText ? `CONTRACTOR CLARIFICATIONS:\n${clarificationText}` : ""}
 
@@ -231,12 +249,13 @@ Return a JSON object:
   "confidence": "high" | "medium" | "low",
   "comparablesSummary": string (2-3 sentences — reference the comparables you found, explain the value gap between renovated vs unrenovated, and how this applies to the project),
   "breakdown": [{ "renovation": string, "estimatedAdd": number, "roi": number, "notes": string }],
-  "comparables": [{ "address": string (full address with city/province), "price": number (CAD), "sqft": number, "renovated": boolean, "notes": string (size, condition, year, similarity), "weight": string ("local" | "reference"), "weightReason": string (e.g. "Same town, same market type" or "Different market type — city vs rural, discounted") }] (MINIMUM 3, up to 5),
+  "comparables": [{ "address": string (full address with city/province), "price": number (CAD), "sqft": number, "renovated": boolean, "notes": string (size, condition, year, similarity), "weight": string ("local" | "reference"), "weightReason": string (e.g. "Same town, same market type" or "Different market type — city vs rural, discounted"), "source": string ("market") }] (MINIMUM 3, up to 5),
   "adjustments": [{ "factor": string (e.g. "Garage vs no garage", "Renovated kitchen vs original"), "valueDifference": number (CAD — estimated price difference this factor makes), "notes": string }] (value adjustments calculated from comparable pairs — show the user what specific features are worth),
   "caveats": string
 }
 
 If the user provided their own comparables, use those as your anchor data and calculate value adjustments between them.
+User-entered comparables are higher priority and more actionable than listing-derived assumptions.
 Focus on percentage-based value add — it's universal across markets.`;
 
   const openai = await getOpenAI();
@@ -284,7 +303,7 @@ Focus on percentage-based value add — it's universal across markets.`;
     confidence?: string;
     comparablesSummary?: string;
     breakdown?: Array<{ renovation: string; estimatedAdd: number; roi?: number; notes: string }>;
-    comparables?: Array<{ address: string; price: number; sqft?: number; renovated?: boolean; notes: string; weight?: "local" | "reference"; weightReason?: string }>;
+    comparables?: Array<{ address: string; price: number; sqft?: number; renovated?: boolean; notes: string; weight?: "local" | "reference"; weightReason?: string; source?: "market" | "user" }>;
     caveats?: string;
   };
 
@@ -338,6 +357,40 @@ Focus on percentage-based value add — it's universal across markets.`;
       }
     }
     parsed.comparables = normalizedComparables;
+  }
+
+  const manualComparables = userComps
+    .filter((c) => c.purchasePrice > 0 || c.salePrice > 0 || c.price > 0)
+    .map((c) => {
+      const displayPrice = c.salePrice && c.salePrice > 0
+        ? c.salePrice
+        : c.price && c.price > 0
+          ? c.price
+          : c.purchasePrice ?? 0;
+      const detailBits: string[] = [];
+      if (c.purchasePrice) detailBits.push(`Bought ${c.purchasePrice.toLocaleString()} CAD${c.purchaseDate ? ` (${c.purchaseDate})` : ""}`);
+      if (c.salePrice) detailBits.push(`Sold ${c.salePrice.toLocaleString()} CAD${c.saleDate ? ` (${c.saleDate})` : ""}`);
+      if (c.renoWork) detailBits.push(`Reno: ${c.renoWork}`);
+      return {
+        address: c.description || "User comparable",
+        price: displayPrice,
+        sqft: c.sqft,
+        renovated: c.salePrice != null && c.purchasePrice != null ? true : undefined,
+        notes: detailBits.join(" · ") || "Manual user-entered flip data",
+        weight: "local" as const,
+        weightReason: "User-entered real flip data (highest priority actionable input).",
+        source: "user" as const,
+      };
+    });
+
+  const marketComparables = (parsed.comparables ?? []).map((c) => ({
+    ...c,
+    source: c.source ?? ("market" as const),
+  }));
+
+  const mergedComparables = [...manualComparables, ...marketComparables];
+  if (mergedComparables.length > 0) {
+    parsed.comparables = mergedComparables;
   }
 
   return NextResponse.json({

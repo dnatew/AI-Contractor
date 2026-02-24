@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { useUserProperties, type UserProperty } from "@/hooks/useUserProperties";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -60,6 +60,7 @@ type ComparableProperty = {
   notes: string;
   weight?: "local" | "reference";
   weightReason?: string;
+  source?: "market" | "user";
 };
 
 type ValueAdjustment = {
@@ -131,6 +132,8 @@ export function RealEstatePanel({
   const [result, setResult] = useState<ComparablesResult | null>(null);
   const [showClarify, setShowClarify] = useState(false);
   const [clarifications, setClarifications] = useState<Record<string, string>>({});
+  const [purchasePrice, setPurchasePrice] = useState<number>(0);
+  const [purchasePosition, setPurchasePosition] = useState<"underpaid" | "fair" | "overpaid">("fair");
   const {
     properties: userComps,
     addProperty,
@@ -141,6 +144,30 @@ export function RealEstatePanel({
   } = useUserProperties();
   const [showUserComps, setShowUserComps] = useState(false);
   const [expandedComp, setExpandedComp] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(`project-purchase-price:${projectId}`);
+      if (!raw) return;
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        setPurchasePrice(parsed);
+      }
+    } catch {
+      // noop
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(`project-purchase-position:${projectId}`);
+      if (raw === "underpaid" || raw === "fair" || raw === "overpaid") {
+        setPurchasePosition(raw);
+      }
+    } catch {
+      // noop
+    }
+  }, [projectId]);
 
   async function addUserComp() {
     const prop = await addProperty();
@@ -262,11 +289,26 @@ export function RealEstatePanel({
               renoWork: c.renoWork || undefined,
               notes: c.notes || undefined,
             })),
+          currentPurchasePrice: purchasePrice > 0 ? purchasePrice : undefined,
+          purchasePosition,
         }),
       });
       if (res.ok) {
         const data = await res.json();
         setResult(data);
+        try {
+          localStorage.setItem(
+            `project-real-estate-last:${projectId}`,
+            JSON.stringify({
+              savedAt: new Date().toISOString(),
+              purchasePrice,
+              purchasePosition,
+              result: data,
+            })
+          );
+        } catch {
+          // noop
+        }
         router.refresh();
       } else {
         const data = await res.json().catch(() => ({}));
@@ -320,6 +362,71 @@ export function RealEstatePanel({
                 <span className="text-slate-500 capitalize">{neighborhoodTier.replace("_", " ")}</span>
               </>
             )}
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-end gap-3">
+              <div className="sm:max-w-xs w-full">
+                <Label className="text-xs text-slate-600 mb-1 block">
+                  What did you buy this property for?
+                </Label>
+                <div className="relative">
+                  <DollarSign className="absolute left-2.5 top-2.5 size-3.5 text-slate-400" />
+                  <Input
+                    type="number"
+                    value={purchasePrice || ""}
+                    onChange={(e) => {
+                      const next = parseFloat(e.target.value) || 0;
+                      setPurchasePrice(next);
+                      try {
+                        if (next > 0) localStorage.setItem(`project-purchase-price:${projectId}`, String(next));
+                        else localStorage.removeItem(`project-purchase-price:${projectId}`);
+                      } catch {
+                        // noop
+                      }
+                    }}
+                    placeholder="e.g. 180000"
+                    className="pl-8 tabular-nums h-9"
+                  />
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500">
+                Used by real estate analysis and prefilled in Flip Calculator.
+              </p>
+              </div>
+              <div className="sm:max-w-md">
+                <Label className="text-xs text-slate-600 mb-1.5 block">
+                  Purchase quality for this neighbourhood
+                </Label>
+                <input
+                  type="range"
+                  min={0}
+                  max={2}
+                  step={1}
+                  value={purchasePosition === "underpaid" ? 0 : purchasePosition === "fair" ? 1 : 2}
+                  onChange={(e) => {
+                    const next = Number(e.target.value) === 0
+                      ? "underpaid"
+                      : Number(e.target.value) === 1
+                        ? "fair"
+                        : "overpaid";
+                    setPurchasePosition(next);
+                    try {
+                      localStorage.setItem(`project-purchase-position:${projectId}`, next);
+                    } catch {
+                      // noop
+                    }
+                  }}
+                  className="w-full accent-slate-800"
+                />
+                <div className="flex justify-between text-[11px] text-slate-500 mt-1">
+                  <span>Underpaid</span>
+                  <span className={purchasePosition === "fair" ? "font-semibold text-slate-700" : ""}>Paid fair</span>
+                  <span>Overpaid</span>
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Your properties / comparables wizard */}
@@ -688,6 +795,11 @@ export function RealEstatePanel({
                                   }`}
                                 >
                                   {c.weight === "local" ? "Local <=50km" : "Ref only"}
+                                </Badge>
+                              )}
+                              {c.source === "user" && (
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-violet-300 text-violet-700 bg-violet-50">
+                                  Your manual comp
                                 </Badge>
                               )}
                             </p>

@@ -40,7 +40,7 @@ function compIcon(index: number) {
   });
 }
 
-export function ComparablesMap({ pins }: { pins: MapPin[] }) {
+export function ComparablesMap({ pins, height = 350 }: { pins: MapPin[]; height?: number }) {
   const mapRef = useRef<HTMLDivElement>(null);
   const leafletMap = useRef<L.Map | null>(null);
 
@@ -94,7 +94,7 @@ export function ComparablesMap({ pins }: { pins: MapPin[] }) {
 
   return (
     <div className="rounded-lg overflow-hidden border border-slate-200 shadow-sm">
-      <div ref={mapRef} style={{ height: 350, width: "100%" }} />
+      <div ref={mapRef} style={{ height, width: "100%" }} />
       <div className="flex flex-wrap gap-4 px-3 py-2 bg-slate-50 text-xs text-slate-500">
         <span className="inline-flex items-center gap-1.5">
           <span className="inline-block w-3 h-3 rounded-full bg-emerald-600" />

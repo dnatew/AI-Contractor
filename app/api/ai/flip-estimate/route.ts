@@ -86,6 +86,13 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const projectId = body.projectId;
   const userContext = body.userContext ?? {};
+  const realEstateContext: {
+    savedAt?: string;
+    estimatedValueAdd?: number;
+    estimatedPercentIncrease?: number;
+    comparablesSummary?: string;
+    comparables?: Array<{ address: string; price: number; sqft?: number; renovated?: boolean; notes?: string; weight?: "local" | "reference"; weightReason?: string }>;
+  } | undefined = body.realEstateContext;
   let userProperties: PropInput[] = body.userProperties ?? [];
 
   if (!projectId) {
@@ -135,6 +142,16 @@ export async function POST(req: NextRequest) {
     : userContext.hasSoldBefore === false
       ? "No, first time in this area"
       : "Not specified";
+  const purchasePosition = userContext.purchasePosition === "underpaid" || userContext.purchasePosition === "fair" || userContext.purchasePosition === "overpaid"
+    ? userContext.purchasePosition
+    : undefined;
+  const purchasePositionLabel = purchasePosition === "underpaid"
+    ? "underpaid vs neighbourhood (bought below local market)"
+    : purchasePosition === "overpaid"
+      ? "overpaid vs neighbourhood (bought above local market)"
+      : purchasePosition === "fair"
+        ? "paid fair market"
+        : "not specified";
 
   const roiStats = computeROIStats(userProperties, renoCost);
 
@@ -217,15 +234,33 @@ CONTRACTOR'S LOCAL KNOWLEDGE:
 - Typical home values in this area: ${localValueLabel}
 - Current market conditions: ${marketLabel}
 - Has sold/bought here before: ${experienceLabel}
+- Purchase position: ${purchasePositionLabel}
 ${userContext.userNotes ? `- Contractor notes: "${userContext.userNotes}"` : ""}
 ${userContext.currentPurchasePrice ? `- They've entered a purchase price: $${userContext.currentPurchasePrice.toLocaleString()}` : ""}
 ${userContext.currentSalePrice ? `- They've entered a target sale price: $${userContext.currentSalePrice.toLocaleString()}` : ""}
+
+${realEstateContext ? `LATEST REAL ESTATE TAB OUTPUT (use as carryover context):
+- Saved at: ${realEstateContext.savedAt ?? "unknown"}
+${realEstateContext.estimatedValueAdd != null ? `- Estimated value add: $${realEstateContext.estimatedValueAdd.toLocaleString()} CAD` : ""}
+${realEstateContext.estimatedPercentIncrease != null ? `- Estimated percent increase: ${realEstateContext.estimatedPercentIncrease}%` : ""}
+${realEstateContext.comparablesSummary ? `- Summary: ${realEstateContext.comparablesSummary}` : ""}
+${realEstateContext.comparables?.length ? `- Top comparables:\n${realEstateContext.comparables.slice(0, 5).map((c, i) => {
+  const bits = [`  ${i + 1}. ${c.address} — $${c.price.toLocaleString()}`];
+  if (c.sqft) bits.push(` (${c.sqft} sqft)`);
+  if (c.weight) bits.push(` [${c.weight}]`);
+  if (c.weightReason) bits.push(` ${c.weightReason}`);
+  return bits.join("");
+}).join("\n")}` : ""}` : ""}
 
 ESTIMATION LOGIC:
 1. If the contractor has completed deals with buy/sell data → use their HISTORICAL ROI PATTERN as the strongest predictor. Their past performance is more predictive than web data.
 2. If no past deals → use online comparables from the search priority above, anchored to the contractor's stated local value range.
 3. Renovation value-add should be estimated from the scope of work, but weighted by the contractor's historical results if available.
 4. For ARV: if contractor averages X% gain on similar deals, apply that same pattern here. An experienced flipper who consistently gains $60K on a $25K reno will likely repeat that.
+5. Respect purchase position: if they underpaid, allow stronger upside; if they overpaid, reduce expected margin and be conservative even if comps look strong.
+6. If Real Estate tab output is provided, treat it as already-curated comparable intelligence and use it before starting fresh web assumptions.
+7. Prioritize USER-ENTERED manual properties over listing-derived renovated/unrenovated labels; user flips are real, actionable data.
+8. Assume current purchase price will usually land near the ROI behavior of manual user flips unless same-size/same-feature local comps clearly contradict it.
 
 Return a JSON object:
 {

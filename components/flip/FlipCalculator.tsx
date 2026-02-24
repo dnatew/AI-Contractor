@@ -8,6 +8,8 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { useUserProperties } from "@/hooks/useUserProperties";
+import { DynamicComparablesMap } from "@/components/real-estate/DynamicMap";
+import type { MapPin as ComparableMapPin } from "@/components/real-estate/ComparablesMap";
 import {
   DollarSign,
   Sparkles,
@@ -68,6 +70,27 @@ type SavedFlipSearch = {
   createdAt: string;
 };
 
+type RealEstateCarryover = {
+  savedAt: string;
+  purchasePrice?: number;
+  purchasePosition?: "underpaid" | "fair" | "overpaid";
+  result?: {
+    estimatedValueAdd?: number;
+    estimatedPercentIncrease?: number;
+    comparablesSummary?: string;
+    comparables?: Array<{
+      address: string;
+      price: number;
+      sqft?: number;
+      renovated?: boolean;
+      notes: string;
+      weight?: "local" | "reference";
+      weightReason?: string;
+    }>;
+    mapPins?: ComparableMapPin[];
+  };
+};
+
 function fmt(n: number) {
   return new Intl.NumberFormat("en-CA", {
     style: "currency",
@@ -115,11 +138,13 @@ export function FlipCalculator({
   const [savedSearches, setSavedSearches] = useState<SavedFlipSearch[]>([]);
   const [loadingSearches, setLoadingSearches] = useState(false);
   const [savingSearch, setSavingSearch] = useState(false);
+  const [lastRealEstate, setLastRealEstate] = useState<RealEstateCarryover | null>(null);
 
   // User context for AI
   const [showContext, setShowContext] = useState(true);
   const [userNotes, setUserNotes] = useState("");
   const [contextSubmitted, setContextSubmitted] = useState(false);
+  const [purchasePosition, setPurchasePosition] = useState<"underpaid" | "fair" | "overpaid">("fair");
 
   const localPattern = useMemo(() => {
     const deals = savedProperties.filter((p) => p.purchasePrice > 0 && p.salePrice > 0);
@@ -163,6 +188,48 @@ export function FlipCalculator({
   useEffect(() => {
     void loadSavedSearches();
   }, [loadSavedSearches]);
+
+  useEffect(() => {
+    if (purchasePrice > 0) return;
+    try {
+      const raw = localStorage.getItem(`project-purchase-price:${projectId}`);
+      if (!raw) return;
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        setPurchasePrice(parsed);
+      }
+    } catch {
+      // noop
+    }
+  }, [projectId, purchasePrice]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(`project-purchase-position:${projectId}`);
+      if (raw === "underpaid" || raw === "fair" || raw === "overpaid") {
+        setPurchasePosition(raw);
+      }
+    } catch {
+      // noop
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(`project-real-estate-last:${projectId}`);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as RealEstateCarryover;
+      setLastRealEstate(parsed);
+      if (!purchasePrice && parsed.purchasePrice && parsed.purchasePrice > 0) {
+        setPurchasePrice(parsed.purchasePrice);
+      }
+      if (parsed.purchasePosition && (parsed.purchasePosition === "underpaid" || parsed.purchasePosition === "fair" || parsed.purchasePosition === "overpaid")) {
+        setPurchasePosition(parsed.purchasePosition);
+      }
+    } catch {
+      // noop
+    }
+  }, [projectId, purchasePrice]);
 
   async function saveCurrentSearch(
     customTitle?: string,
@@ -266,7 +333,17 @@ export function FlipCalculator({
             userNotes: userNotes.trim() || undefined,
             currentPurchasePrice: purchasePrice > 0 ? purchasePrice : undefined,
             currentSalePrice: salePrice > 0 ? salePrice : undefined,
+            purchasePosition,
           },
+          realEstateContext: lastRealEstate?.result
+            ? {
+                savedAt: lastRealEstate.savedAt,
+                estimatedValueAdd: lastRealEstate.result.estimatedValueAdd,
+                estimatedPercentIncrease: lastRealEstate.result.estimatedPercentIncrease,
+                comparablesSummary: lastRealEstate.result.comparablesSummary,
+                comparables: lastRealEstate.result.comparables?.slice(0, 5),
+              }
+            : undefined,
           userProperties: savedProperties
             .filter((p) => p.purchasePrice > 0 || p.salePrice > 0)
             .map((p) => ({
@@ -505,6 +582,71 @@ export function FlipCalculator({
             </div>
           )}
 
+          {/* Last real estate output carryover */}
+          {lastRealEstate?.result && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-slate-700">
+                  Using latest Real Estate analysis
+                </p>
+                {lastRealEstate.savedAt && (
+                  <span className="text-[11px] text-slate-400">
+                    {new Date(lastRealEstate.savedAt).toLocaleString()}
+                  </span>
+                )}
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+                  <div className="px-3 py-2 border-b border-slate-100 text-xs font-medium text-slate-600">
+                    Map from Real Estate tab
+                  </div>
+                  {lastRealEstate.result.mapPins && lastRealEstate.result.mapPins.length > 0 ? (
+                    <DynamicComparablesMap pins={lastRealEstate.result.mapPins} height={220} />
+                  ) : (
+                    <div className="h-[220px] flex items-center justify-center text-xs text-slate-400">
+                      No map points from last analysis
+                    </div>
+                  )}
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
+                  <p className="text-xs font-medium text-slate-600">Comparables carryover</p>
+                  <div className="flex flex-wrap gap-2">
+                    {lastRealEstate.result.estimatedValueAdd != null && (
+                      <Badge variant="outline" className="text-[11px]">
+                        Value add {fmt(lastRealEstate.result.estimatedValueAdd)}
+                      </Badge>
+                    )}
+                    {lastRealEstate.result.estimatedPercentIncrease != null && (
+                      <Badge variant="outline" className="text-[11px]">
+                        +{lastRealEstate.result.estimatedPercentIncrease.toFixed(1)}%
+                      </Badge>
+                    )}
+                    {lastRealEstate.result.comparables?.length ? (
+                      <Badge variant="outline" className="text-[11px]">
+                        {lastRealEstate.result.comparables.length} comps
+                      </Badge>
+                    ) : null}
+                  </div>
+                  {lastRealEstate.result.comparablesSummary && (
+                    <p className="text-xs text-slate-500 leading-relaxed line-clamp-5">
+                      {lastRealEstate.result.comparablesSummary}
+                    </p>
+                  )}
+                  {lastRealEstate.result.comparables && lastRealEstate.result.comparables.length > 0 && (
+                    <ul className="space-y-1.5">
+                      {lastRealEstate.result.comparables.slice(0, 3).map((c, idx) => (
+                        <li key={`${c.address}-${idx}`} className="text-[11px] text-slate-600 flex justify-between gap-3">
+                          <span className="truncate">{c.address}</span>
+                          <span className="tabular-nums shrink-0">{fmt(c.price)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Quick re-run if context is collapsed */}
           {contextSubmitted && !showContext && (
             <div className="flex items-center gap-2">
@@ -687,10 +829,48 @@ export function FlipCalculator({
                 <Input
                   type="number"
                   value={purchasePrice || ""}
-                  onChange={(e) => setPurchasePrice(parseFloat(e.target.value) || 0)}
+                  onChange={(e) => {
+                    const next = parseFloat(e.target.value) || 0;
+                    setPurchasePrice(next);
+                    try {
+                      if (next > 0) localStorage.setItem(`project-purchase-price:${projectId}`, String(next));
+                      else localStorage.removeItem(`project-purchase-price:${projectId}`);
+                    } catch {
+                      // noop
+                    }
+                  }}
                   className="pl-8 tabular-nums"
                   placeholder="0"
                 />
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs text-slate-500">Purchase quality in this neighbourhood</Label>
+              <input
+                type="range"
+                min={0}
+                max={2}
+                step={1}
+                value={purchasePosition === "underpaid" ? 0 : purchasePosition === "fair" ? 1 : 2}
+                onChange={(e) => {
+                  const next = Number(e.target.value) === 0
+                    ? "underpaid"
+                    : Number(e.target.value) === 1
+                      ? "fair"
+                      : "overpaid";
+                  setPurchasePosition(next);
+                  try {
+                    localStorage.setItem(`project-purchase-position:${projectId}`, next);
+                  } catch {
+                    // noop
+                  }
+                }}
+                className="w-full accent-slate-800 mt-1"
+              />
+              <div className="flex justify-between text-[11px] text-slate-400 mt-0.5">
+                <span>Underpaid</span>
+                <span className={purchasePosition === "fair" ? "font-semibold text-slate-600" : ""}>Paid fair</span>
+                <span>Overpaid</span>
               </div>
             </div>
             <div>
