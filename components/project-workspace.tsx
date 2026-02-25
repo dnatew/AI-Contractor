@@ -6,6 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { PhotoUploader } from "@/components/photo-uploader";
 import { ScopeEditor } from "@/components/scope/ScopeEditor";
 import { Badge } from "@/components/ui/badge";
@@ -45,6 +46,9 @@ export function ProjectWorkspace({ project }: { project: ProjectWithRelations })
   const [editingDesc, setEditingDesc] = useState(false);
   const [description, setDescription] = useState(project.jobPrompt ?? "");
   const [savingDesc, setSavingDesc] = useState(false);
+  const [loadingWizard, setLoadingWizard] = useState(false);
+  const [wizardQuestions, setWizardQuestions] = useState<Array<{ id: string; question: string; placeholder?: string }>>([]);
+  const [wizardAnswers, setWizardAnswers] = useState<Record<string, string>>({});
 
   const totalItems = project.scopes.reduce((acc, s) => acc + s.items.length, 0);
   const workTypes = project.workTypes?.split(",").filter(Boolean) ?? [];
@@ -142,7 +146,38 @@ export function ProjectWorkspace({ project }: { project: ProjectWithRelations })
     }
   }
 
-  async function generateScope() {
+  async function fetchWizardQuestions() {
+    setLoadingWizard(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/ai/generate-scope", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: project.id,
+          mode: "questions",
+        }),
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (Array.isArray(data.questions) && data.questions.length > 0) {
+        setWizardQuestions(data.questions);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    } finally {
+      setLoadingWizard(false);
+    }
+  }
+
+  async function generateScope(opts?: { skipWizard?: boolean }) {
+    if (!opts?.skipWizard && totalItems === 0 && !tweakPrompt.trim() && wizardQuestions.length === 0) {
+      const opened = await fetchWizardQuestions();
+      if (opened) return;
+    }
+
     setGenerating(true);
     setError(null);
     try {
@@ -152,6 +187,7 @@ export function ProjectWorkspace({ project }: { project: ProjectWithRelations })
         body: JSON.stringify({
           projectId: project.id,
           tweakPrompt: tweakPrompt.trim() || undefined,
+          refinementAnswers: wizardAnswers,
         }),
       });
       if (res.ok) {
@@ -159,6 +195,8 @@ export function ProjectWorkspace({ project }: { project: ProjectWithRelations })
           setDescription((prev) => prev ? `${prev}\n\nUpdate: ${tweakPrompt.trim()}` : tweakPrompt.trim());
           setTweakPrompt("");
         }
+        setWizardQuestions([]);
+        setWizardAnswers({});
         router.refresh();
       } else {
         const data = await res.json().catch(() => ({}));
@@ -259,6 +297,46 @@ export function ProjectWorkspace({ project }: { project: ProjectWithRelations })
         {/* Generate / refine scope */}
         <Card className="border-slate-200 bg-white shadow-sm">
           <CardContent className="py-4 space-y-3">
+            {wizardQuestions.length > 0 && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3 space-y-3">
+                <p className="text-xs font-medium text-blue-700">
+                  Quick scope wizard (optional) - answer what you know for better coverage.
+                </p>
+                <div className="grid gap-2 md:grid-cols-2">
+                  {wizardQuestions.map((q) => (
+                    <div key={q.id} className="space-y-1">
+                      <label className="text-[11px] text-slate-600">{q.question}</label>
+                      <Input
+                        value={wizardAnswers[q.id] ?? ""}
+                        onChange={(e) =>
+                          setWizardAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))
+                        }
+                        placeholder={q.placeholder ?? "Type answer..."}
+                        className="h-8 bg-white"
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" onClick={() => generateScope({ skipWizard: true })} disabled={generating}>
+                    Continue with answers
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      setWizardQuestions([]);
+                      setWizardAnswers({});
+                      void generateScope({ skipWizard: true });
+                    }}
+                    disabled={generating}
+                  >
+                    Skip wizard
+                  </Button>
+                </div>
+              </div>
+            )}
+
             {/* Suggestion bubbles */}
             {suggestions.length > 0 && (
               <div className="space-y-2">
@@ -309,15 +387,15 @@ export function ProjectWorkspace({ project }: { project: ProjectWithRelations })
                 )}
               </div>
               <Button
-                onClick={generateScope}
-                disabled={generating}
+                onClick={() => generateScope()}
+                disabled={generating || loadingWizard}
                 className="shrink-0 gap-1.5"
                 size={tweakPrompt.trim() ? "default" : "sm"}
               >
-                {generating ? (
+                {generating || loadingWizard ? (
                   <span className="flex items-center gap-2">
                     <span className="size-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                    {tweakPrompt.trim() ? "Refining..." : "Generating..."}
+                    {loadingWizard ? "Preparing..." : tweakPrompt.trim() ? "Refining..." : "Generating..."}
                   </span>
                 ) : tweakPrompt.trim() ? (
                   <>

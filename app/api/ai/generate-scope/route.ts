@@ -10,59 +10,53 @@ async function getOpenAI() {
   return new OpenAI({ apiKey: key });
 }
 
-const DESCRIPTION_SCOPE_PROMPT = `You are a Canadian construction/renovation scope estimator.
+const DESCRIPTION_SCOPE_PROMPT = `You are a Canadian renovation scope estimator.
 
-Given a project description with property details, work types, rooms, material grade, and contractor notes, generate a comprehensive work scope.
+Build concise but complete work packages from:
+- job description (primary)
+- selected work types and rooms
+- material grade
+- notes and photo notes
 
-REFINEMENT MODE:
-If you receive a CURRENT SCOPE with a REFINEMENT INSTRUCTION:
-- The contractor has already reviewed the scope and wants a targeted change.
-- The REFINEMENT INSTRUCTION is your HIGHEST PRIORITY — follow it exactly.
-- Keep all other items from the current scope intact (same quantities, hours, materials).
-- Only modify what the refinement asks for.
+Output style:
+- practical estimating packages
+- clear area names
+- realistic quantity, unit, labor hours
+- include prep/demo/install/finish effort where relevant
 
-HOW TO BUILD THE SCOPE:
-The contractor has selected WORK TYPES and ROOMS. You must cross-reference them:
-- If they selected work types [painting, tiling, baseboard_trim] and rooms [Kitchen, Bathroom, Living Room]:
-  → You need items covering painting in those rooms, tiling where relevant, and trim where relevant.
-  → NOT just one type of work repeated across rooms.
-- Think of it as a matrix: WORK TYPES × ROOMS. Every selected work type must appear. Every selected room must appear.
-- You can combine multiple work types into one item per room when logical (e.g. "Kitchen — paint walls, install backsplash tile, replace baseboard trim").
-- Or you can have separate items per work type if they are large enough to warrant it.
-- DO NOT default to flooring-only. Only include flooring if the contractor selected it as a work type.
+Coverage:
+- include all selected work types somewhere in the final scope
+- if description implies additional critical work, include it
 
-CRITICAL RULES:
-1. Return 6 to 8 scope items total.
-2. Each item is a complete work package — include demo, prep, install, and finishing in the description.
-3. EVERY selected work type MUST be represented in at least one item.
-4. EVERY selected room MUST appear as a segment in at least one item.
-5. The JOB DESCRIPTION is written by the contractor and is a PRIMARY input — treat it as specific instructions.
-   - If it says "rip out old kitchen cabinets and install new ones", that overrides generic assumptions.
-   - If it mentions specific materials, brands, or methods, use those in the scope items.
-   - If it describes work not covered by the selected work types, STILL include it.
-   - The description tells you exactly what the contractor wants — reflect it faithfully.
-6. Include realistic labor hours covering all sub-tasks (demo + prep + install + finishing + cleanup).
-7. Quantity should be realistic for the work described (sqft for surfaces, linear ft for trim, "each" for fixtures).
-8. Material names should reflect the selected material grade (budget = basic/builder, mid_range = standard, premium = high-end) unless the description specifies otherwise.
+Adaptive item count:
+- simple projects: 7-8 items
+- complex/full interior projects: 10-12 items
 
-EXAMPLES of good work-type coverage:
-- Painting selected → "Kitchen — scrape, prime and paint walls and ceiling (2 coats), touch-up trim"
-- Tiling selected → "Bathroom — remove old tile, prep substrate, install ceramic tile on floor and shower walls"
-- Drywall selected → "Basement — hang and finish drywall on framed walls, tape, mud, sand to level 4"
-- Baseboard/trim selected → "Living Room — remove old baseboards, install new MDF baseboard and door casing"
-- Kitchen reno selected → "Kitchen — demolish old cabinets, install new shaker cabinets, countertop, hardware"
-- Plumbing selected → "Bathroom — replace faucet, install new toilet, connect vanity plumbing"
-- Electrical selected → "Kitchen — install 4 pot lights, add under-cabinet LED strips, replace switches/outlets"
+Refinement mode:
+- if current scope + refinement instruction is provided, apply refinement first
+- keep unaffected intent intact
 
-Return a JSON array of scope items. Each item:
-- segment: string (room or area, e.g. "Kitchen", "Bathroom", "Living Room")
-- task: string (complete work package — be specific about what's included)
-- material: string (primary material with grade appropriate to selection)
-- quantity: number (realistic quantity for the work)
-- unit: string ("sqft", "linear ft", "each", etc.)
-- laborHours: number (total hours for the full work package)
+Return ONLY JSON array:
+[
+  {
+    "segment": string,
+    "task": string,
+    "material": string,
+    "quantity": number,
+    "unit": string,
+    "laborHours": number
+  }
+]`;
 
-Return ONLY a valid JSON array, no markdown or explanation.`;
+const REFINEMENT_WIZARD_PROMPT = `You generate a short scope-refinement wizard for contractors.
+
+Given broad project context, return 5-6 concise questions that improve scope accuracy.
+Ask only high-impact questions (coverage, quantities, major systems, areas).
+
+Return ONLY JSON:
+[
+  { "id": "string_snake_case", "question": "string", "placeholder": "string" }
+]`;
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -80,6 +74,11 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const projectId = body.projectId;
   const tweakPrompt = typeof body.tweakPrompt === "string" ? body.tweakPrompt.trim() : "";
+  const mode = typeof body.mode === "string" ? body.mode : "generate";
+  const refinementAnswers: Record<string, string> =
+    body.refinementAnswers && typeof body.refinementAnswers === "object"
+      ? body.refinementAnswers
+      : {};
 
   if (!projectId) {
     return NextResponse.json({ error: "projectId required" }, { status: 400 });
@@ -123,6 +122,67 @@ export async function POST(req: NextRequest) {
   const workTypeLabels = workTypeList.map(w => WORK_TYPE_LABELS[w] ?? w.replace(/_/g, " "));
   const roomList = project.rooms?.split(",").filter(Boolean).map((r: string) => r.replace(/_/g, " ")) ?? [];
   const grade = project.materialGrade?.replace(/_/g, " ") ?? "mid range";
+  const hasWholeHouseOnly =
+    roomList.length === 1 && roomList[0].toLowerCase().replace(/\s+/g, "_") === "whole_house";
+  const isComplex =
+    workTypeList.length >= 6 ||
+    hasWholeHouseOnly ||
+    /full\s*(interior|house)|whole\s*house|gut|complete\s*reno|complete\s*interior/i.test(project.jobPrompt ?? "");
+  const targetRange = isComplex ? "10-12" : "7-8";
+
+  if (mode === "questions") {
+    const wizardContext = [
+      `Address: ${project.address}, ${project.province}`,
+      `Sqft: ${project.sqft}`,
+      `Work types: ${workTypeLabels.join(", ") || "not provided"}`,
+      `Rooms: ${roomList.join(", ") || "not provided"}`,
+      `Material grade: ${grade}`,
+      `Job description: ${project.jobPrompt ?? "not provided"}`,
+      `Notes: ${project.notes ?? "none"}`,
+      `Photo notes: ${
+        project.photos
+          .filter((p) => p.roomLabel || p.userNotes)
+          .map((p) => [p.roomLabel, p.userNotes].filter(Boolean).join(" - "))
+          .join(" | ") || "none"
+      }`,
+    ].join("\n");
+
+    const openai = await getOpenAI();
+    const qRes = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: REFINEMENT_WIZARD_PROMPT },
+        { role: "user", content: wizardContext },
+      ],
+      max_tokens: 500,
+    });
+    const qText = qRes.choices[0]?.message?.content ?? "[]";
+    let questions: Array<{ id: string; question: string; placeholder?: string }> = [];
+    try {
+      const parsed = JSON.parse(qText.replace(/```json\n?|\n?```/g, "").trim()) as unknown;
+      if (Array.isArray(parsed)) {
+        questions = parsed
+          .map((q) => {
+            const obj = q as Record<string, unknown>;
+            return {
+              id: String(obj.id ?? "").trim(),
+              question: String(obj.question ?? "").trim(),
+              placeholder: String(obj.placeholder ?? "").trim() || undefined,
+            };
+          })
+          .filter((q) => q.id && q.question)
+          .slice(0, 6);
+      }
+    } catch {
+      questions = [];
+    }
+
+    return NextResponse.json({
+      questions,
+      needsRefinement: questions.length > 0,
+      recommendedItemRange: targetRange,
+    });
+  }
 
   const contextParts: string[] = [];
   contextParts.push("=== PROJECT DETAILS ===");
@@ -137,25 +197,20 @@ export async function POST(req: NextRequest) {
     for (const label of workTypeLabels) {
       contextParts.push(`  • ${label}`);
     }
-    contextParts.push(`→ EVERY work type listed above MUST appear in at least one scope item. Do NOT focus on just one type.`);
+    contextParts.push(`Coverage target: include all selected work types somewhere in the final scope.`);
   }
   if (roomList.length > 0) {
     contextParts.push(`Rooms selected (${roomList.length}):`);
     for (const room of roomList) {
       contextParts.push(`  • ${room}`);
     }
-    contextParts.push(`→ Use these rooms as "segment" values. Each room needs at least one scope item.`);
+    contextParts.push(`Use room/area segments that are clear to estimate from.`);
   }
   contextParts.push(`Material grade: ${grade}`);
-  contextParts.push(`→ Use ${grade} materials in all material names.`);
-
-  if (workTypeLabels.length > 0 && roomList.length > 0) {
-    contextParts.push(`\n→ CHECKLIST: Your scope must cover: ${workTypeLabels.join(", ")} across ${roomList.join(", ")}. If a work type doesn't apply to a specific room, skip that combination, but every work type must appear somewhere.`);
-  }
+  contextParts.push(`Target scope size: ${targetRange} items (adaptive by complexity).`);
 
   if (project.jobPrompt) {
-    contextParts.push(`\n=== JOB DESCRIPTION (written by the contractor — this is a primary input, follow it closely) ===\n${project.jobPrompt}`);
-    contextParts.push(`→ The above description tells you EXACTLY what the contractor wants done. Build scope items that match it.`);
+    contextParts.push(`\n=== JOB DESCRIPTION ===\n${project.jobPrompt}`);
   }
   if (project.notes) {
     contextParts.push(`\n=== ADDITIONAL NOTES ===\n${project.notes}`);
@@ -171,9 +226,16 @@ export async function POST(req: NextRequest) {
     contextParts.push(`→ Apply the refinement instruction while keeping everything else intact.`);
     contextParts.push(`→ If the instruction says to "break apart" or "separate" items, split them into individual items.`);
     contextParts.push(`→ If the instruction says to "add" something, add it without removing existing items.`);
-    contextParts.push(`→ Still respect the 6-8 item limit — consolidate elsewhere if needed.`);
+    contextParts.push(`→ Keep final scope in the adaptive target range (${targetRange}).`);
   } else if (tweakPrompt) {
     contextParts.push(`\n=== ADDITIONAL INSTRUCTION ===\n${tweakPrompt}`);
+  }
+
+  const answered = Object.entries(refinementAnswers)
+    .filter(([, v]) => typeof v === "string" && v.trim())
+    .map(([k, v]) => `- ${k}: ${v.trim()}`);
+  if (answered.length > 0) {
+    contextParts.push(`\n=== REFINEMENT Q&A ===\n${answered.join("\n")}`);
   }
 
   const photoNotes = project.photos
