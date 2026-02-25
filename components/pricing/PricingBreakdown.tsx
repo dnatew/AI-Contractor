@@ -1,11 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
+  AlertTriangle,
   DollarSign,
   Clock,
   Package,
@@ -160,16 +163,59 @@ function GroupedEstimateTable({ lines }: { lines: FullLine[] }) {
 export function PricingBreakdown({ projectId, province, estimate, showValueTracking = true }: PricingBreakdownProps) {
   const router = useRouter();
   const [generating, setGenerating] = useState(false);
+  const [loadingWizard, setLoadingWizard] = useState(false);
+  const [estimatePrompt, setEstimatePrompt] = useState("");
+  const [wizardQuestions, setWizardQuestions] = useState<Array<{ id: string; question: string; placeholder?: string }>>([]);
+  const [wizardAnswers, setWizardAnswers] = useState<Record<string, string>>({});
+  const [overrides, setOverrides] = useState<Record<string, { quantity?: number; materialUnitCost?: number; laborHours?: number; materialName?: string }>>({});
 
-  async function generateEstimate() {
+  const lineWarnings = useMemo(() => {
+    const a = estimate?.assumptions as { lineWarnings?: string[] } | null;
+    return Array.isArray(a?.lineWarnings) ? a.lineWarnings : [];
+  }, [estimate]);
+
+  async function fetchEstimateWizard() {
+    setLoadingWizard(true);
+    try {
+      const res = await fetch("/api/estimates/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, mode: "questions" }),
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      if (Array.isArray(data.questions) && data.questions.length > 0) {
+        setWizardQuestions(data.questions);
+        return true;
+      }
+      return false;
+    } finally {
+      setLoadingWizard(false);
+    }
+  }
+
+  async function generateEstimate(options?: { skipWizard?: boolean }) {
+    if (!options?.skipWizard && wizardQuestions.length === 0 && !estimatePrompt.trim()) {
+      const opened = await fetchEstimateWizard();
+      if (opened) return;
+    }
     setGenerating(true);
     try {
       const res = await fetch("/api/estimates/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId }),
+        body: JSON.stringify({
+          projectId,
+          estimatePrompt: estimatePrompt.trim() || undefined,
+          refinementAnswers: wizardAnswers,
+          overrides,
+        }),
       });
-      if (res.ok) router.refresh();
+      if (res.ok) {
+        setWizardQuestions([]);
+        setWizardAnswers({});
+        router.refresh();
+      }
     } finally {
       setGenerating(false);
     }
@@ -188,7 +234,7 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
           </div>
         </CardHeader>
         <CardContent>
-          <Button onClick={generateEstimate} disabled={generating} className="gap-2">
+          <Button onClick={() => generateEstimate({ skipWizard: true })} disabled={generating} className="gap-2">
             <Sparkles className="size-4" />
             {generating ? "Generating..." : "Generate Estimate"}
           </Button>
@@ -223,7 +269,7 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
             </div>
           </div>
           <div className="flex gap-2 items-center">
-            <Button size="sm" variant="outline" onClick={generateEstimate} disabled={generating} className="gap-1.5">
+            <Button size="sm" variant="outline" onClick={() => generateEstimate({ skipWizard: true })} disabled={generating} className="gap-1.5">
               <RefreshCw className={`size-3.5 ${generating ? "animate-spin" : ""}`} />
               {generating ? "Updating..." : "Regenerate"}
             </Button>
@@ -232,6 +278,40 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+          <p className="text-xs font-medium text-slate-600">Estimate refinement (optional)</p>
+          <Textarea
+            value={estimatePrompt}
+            onChange={(e) => setEstimatePrompt(e.target.value)}
+            rows={2}
+            className="bg-white"
+            placeholder="Add context for this estimate (e.g. partial bathroom refresh, not full gut; heated floor only in kitchen)."
+          />
+          {wizardQuestions.length > 0 && (
+            <div className="grid gap-2 md:grid-cols-2">
+              {wizardQuestions.map((q) => (
+                <div key={q.id} className="space-y-1">
+                  <label className="text-[11px] text-slate-500">{q.question}</label>
+                  <Input
+                    value={wizardAnswers[q.id] ?? ""}
+                    onChange={(e) => setWizardAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
+                    placeholder={q.placeholder ?? "Answer..."}
+                    className="h-8 bg-white"
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" onClick={() => { void fetchEstimateWizard(); }} disabled={loadingWizard || generating}>
+              {loadingWizard ? "Loading questions..." : "Refine inputs"}
+            </Button>
+            <Button size="sm" onClick={() => generateEstimate({ skipWizard: true })} disabled={generating || loadingWizard}>
+              {generating ? "Updating..." : "Regenerate with refinement"}
+            </Button>
+          </div>
+        </div>
+
         {/* Assumptions bar */}
         {assumptions && (
           <div className="flex flex-wrap gap-3 text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-2">
@@ -245,6 +325,95 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
 
         {/* Grouped table */}
         <GroupedEstimateTable lines={estimate.lines} />
+
+        {!!estimate?.lines.length && (
+          <div className="rounded-lg border border-slate-200 p-3 space-y-3">
+            <p className="text-xs font-medium text-slate-600">Manual cost overrides</p>
+            <div className="space-y-2 max-h-64 overflow-auto pr-1">
+              {estimate.lines.map((line) => (
+                <div key={line.id} className="grid grid-cols-1 md:grid-cols-4 gap-2 text-xs border border-slate-100 rounded p-2">
+                  <div className="md:col-span-4 text-slate-700 font-medium truncate">{line.scopeItem.segment} — {line.scopeItem.task}</div>
+                  <Input
+                    type="number"
+                    value={overrides[line.scopeItemId]?.quantity ?? line.quantity ?? 0}
+                    onChange={(e) =>
+                      setOverrides((prev) => ({
+                        ...prev,
+                        [line.scopeItemId]: {
+                          ...prev[line.scopeItemId],
+                          quantity: parseFloat(e.target.value) || 0,
+                        },
+                      }))
+                    }
+                    className="h-8"
+                    placeholder="Qty"
+                  />
+                  <Input
+                    type="number"
+                    value={overrides[line.scopeItemId]?.materialUnitCost ?? line.materialUnitCost ?? 0}
+                    onChange={(e) =>
+                      setOverrides((prev) => ({
+                        ...prev,
+                        [line.scopeItemId]: {
+                          ...prev[line.scopeItemId],
+                          materialUnitCost: parseFloat(e.target.value) || 0,
+                        },
+                      }))
+                    }
+                    className="h-8"
+                    placeholder="Mat $/unit"
+                  />
+                  <Input
+                    type="number"
+                    value={overrides[line.scopeItemId]?.laborHours ?? line.laborHours ?? 0}
+                    onChange={(e) =>
+                      setOverrides((prev) => ({
+                        ...prev,
+                        [line.scopeItemId]: {
+                          ...prev[line.scopeItemId],
+                          laborHours: parseFloat(e.target.value) || 0,
+                        },
+                      }))
+                    }
+                    className="h-8"
+                    placeholder="Labor hrs"
+                  />
+                  <Input
+                    value={overrides[line.scopeItemId]?.materialName ?? line.materialName ?? ""}
+                    onChange={(e) =>
+                      setOverrides((prev) => ({
+                        ...prev,
+                        [line.scopeItemId]: {
+                          ...prev[line.scopeItemId],
+                          materialName: e.target.value,
+                        },
+                      }))
+                    }
+                    className="h-8"
+                    placeholder="Material label"
+                  />
+                </div>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-500">
+              Overrides apply when you click <span className="font-medium">Regenerate with refinement</span>.
+            </p>
+          </div>
+        )}
+
+        {lineWarnings.length > 0 && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-1">
+            <p className="text-xs font-medium text-amber-700 flex items-center gap-1.5">
+              <AlertTriangle className="size-3.5" />
+              Estimate quality warnings
+            </p>
+            <ul className="space-y-1">
+              {lineWarnings.map((w, i) => (
+                <li key={`${w}-${i}`} className="text-xs text-amber-700">{w}</li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* Totals */}
         <div className="border-t border-slate-200 pt-4 space-y-1.5">
