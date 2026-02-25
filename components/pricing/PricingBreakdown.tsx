@@ -9,6 +9,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
   DollarSign,
   Clock,
   Package,
@@ -28,6 +30,15 @@ type PricingBreakdownProps = {
   province: string;
   estimate: EstimateWithLines | null;
   showValueTracking?: boolean;
+};
+
+type WizardQuestion = {
+  id: string;
+  question: string;
+  emoji?: string;
+  type?: "multiple_choice" | "text";
+  options?: Array<{ id: string; label: string; emoji?: string }>;
+  placeholder?: string;
 };
 
 function fmt(n: number) {
@@ -165,7 +176,8 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
   const [generating, setGenerating] = useState(false);
   const [loadingWizard, setLoadingWizard] = useState(false);
   const [estimatePrompt, setEstimatePrompt] = useState("");
-  const [wizardQuestions, setWizardQuestions] = useState<Array<{ id: string; question: string; placeholder?: string }>>([]);
+  const [wizardQuestions, setWizardQuestions] = useState<WizardQuestion[]>([]);
+  const [wizardIndex, setWizardIndex] = useState(0);
   const [wizardAnswers, setWizardAnswers] = useState<Record<string, string>>({});
   const [overrides, setOverrides] = useState<Record<string, { quantity?: number; materialUnitCost?: number; laborHours?: number; materialName?: string }>>({});
 
@@ -201,7 +213,25 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
       }
       const data = await res.json();
       if (Array.isArray(data.questions) && data.questions.length > 0) {
-        setWizardQuestions(data.questions);
+        setWizardQuestions(
+          (data.questions as Array<Record<string, unknown>>).map((q) => ({
+            id: String(q.id ?? ""),
+            question: String(q.question ?? ""),
+            emoji: typeof q.emoji === "string" ? q.emoji : undefined,
+            type: q.type === "text" ? ("text" as const) : ("multiple_choice" as const),
+            options: Array.isArray(q.options)
+              ? (q.options as Array<Record<string, unknown>>)
+                  .map((o) => ({
+                    id: String(o.id ?? ""),
+                    label: String(o.label ?? ""),
+                    emoji: typeof o.emoji === "string" ? o.emoji : undefined,
+                  }))
+                  .filter((o) => o.id && o.label)
+              : undefined,
+            placeholder: typeof q.placeholder === "string" ? q.placeholder : undefined,
+          })).filter((q) => q.id && q.question)
+        );
+        setWizardIndex(0);
         setWizardAnswers((prev) => {
           const next: Record<string, string> = { ...prev };
           for (const q of data.questions as Array<{ id: string }>) {
@@ -238,6 +268,7 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
       });
       if (res.ok) {
         setWizardQuestions([]);
+        setWizardIndex(0);
         setWizardAnswers({});
         router.refresh();
       }
@@ -285,6 +316,14 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
     taxName?: string;
     markupPercent?: number;
   } | null;
+  const activeQuestion = wizardQuestions[wizardIndex];
+  const activeAnswer = activeQuestion ? (wizardAnswers[activeQuestion.id] ?? "") : "";
+  const totalWizard = wizardQuestions.length;
+  const canContinue =
+    !!activeQuestion &&
+    (activeQuestion.type === "multiple_choice"
+      ? activeAnswer.trim().length > 0
+      : activeAnswer.trim().length > 0);
 
   const userLines = estimate.lines.filter((l) => l.pricingSource === "user").length;
   const totalLines = estimate.lines.length;
@@ -324,19 +363,81 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
             className="bg-white"
             placeholder="Add context for this estimate (e.g. partial bathroom refresh, not full gut; heated floor only in kitchen)."
           />
-          {wizardQuestions.length > 0 && (
-            <div className="grid gap-2 md:grid-cols-2">
-              {wizardQuestions.map((q) => (
-                <div key={q.id} className="space-y-1">
-                  <label className="text-[11px] text-slate-500">{q.question}</label>
-                  <Input
-                    value={wizardAnswers[q.id] ?? ""}
-                    onChange={(e) => setWizardAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
-                    placeholder={q.placeholder ?? "Answer..."}
-                    className="h-8 bg-white"
-                  />
+          {activeQuestion && (
+            <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-[11px] text-slate-500">
+                  Question {wizardIndex + 1} of {totalWizard}
+                </p>
+                <span className="text-xs text-slate-400">{activeQuestion.emoji ?? "🧠"}</span>
+              </div>
+              <p className="text-sm text-slate-800 font-medium">{activeQuestion.question}</p>
+
+              {activeQuestion.type === "multiple_choice" && activeQuestion.options && activeQuestion.options.length > 1 ? (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {activeQuestion.options.map((opt) => {
+                    const selected = activeAnswer === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        onClick={() =>
+                          setWizardAnswers((prev) => ({ ...prev, [activeQuestion.id]: opt.id }))
+                        }
+                        className={`text-left rounded-lg border px-3 py-2 text-sm transition-colors ${
+                          selected
+                            ? "border-slate-900 bg-slate-900 text-white"
+                            : "border-slate-200 hover:border-slate-300 bg-white text-slate-700"
+                        }`}
+                      >
+                        <span className="mr-1.5">{opt.emoji ?? "•"}</span>
+                        {opt.label}
+                      </button>
+                    );
+                  })}
                 </div>
-              ))}
+              ) : (
+                <Input
+                  value={activeAnswer}
+                  onChange={(e) =>
+                    setWizardAnswers((prev) => ({ ...prev, [activeQuestion.id]: e.target.value }))
+                  }
+                  placeholder={activeQuestion.placeholder ?? "Answer..."}
+                  className="h-9 bg-white"
+                />
+              )}
+
+              <div className="flex items-center justify-between">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setWizardIndex((i) => Math.max(0, i - 1))}
+                  disabled={wizardIndex === 0}
+                  className="gap-1"
+                >
+                  <ArrowLeft className="size-3.5" />
+                  Back
+                </Button>
+
+                {wizardIndex < totalWizard - 1 ? (
+                  <Button
+                    size="sm"
+                    onClick={() => setWizardIndex((i) => Math.min(totalWizard - 1, i + 1))}
+                    disabled={!canContinue}
+                    className="gap-1"
+                  >
+                    Next
+                    <ArrowRight className="size-3.5" />
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    onClick={() => generateEstimate({ skipWizard: true })}
+                    disabled={!canContinue || generating || loadingWizard}
+                  >
+                    Apply and regenerate
+                  </Button>
+                )}
+              </div>
             </div>
           )}
           <div className="flex flex-wrap gap-2">

@@ -21,7 +21,16 @@ Do not repeat already-answered questions.
 
 Return ONLY JSON:
 [
-  { "id": "string_snake_case", "question": "string", "placeholder": "string" }
+  {
+    "id": "string_snake_case",
+    "question": "string",
+    "emoji": "single_emoji",
+    "type": "multiple_choice" | "text",
+    "options": [
+      { "id": "option_id", "label": "string", "emoji": "single_emoji" }
+    ],
+    "placeholder": "string"
+  }
 ]`;
 
 type EstimateOverride = {
@@ -140,9 +149,22 @@ export async function POST(req: NextRequest) {
         questions = parsed
           .map((q) => {
             const obj = q as Record<string, unknown>;
+            const optionsRaw = Array.isArray(obj.options) ? obj.options : [];
+            const options = optionsRaw
+              .map((o) => o as Record<string, unknown>)
+              .map((o) => ({
+                id: String(o.id ?? "").trim(),
+                label: String(o.label ?? "").trim(),
+                emoji: String(o.emoji ?? "").trim() || undefined,
+              }))
+              .filter((o) => o.id && o.label)
+              .slice(0, 6);
             return {
               id: String(obj.id ?? "").trim(),
               question: String(obj.question ?? "").trim(),
+              emoji: String(obj.emoji ?? "").trim() || undefined,
+              type: obj.type === "text" ? "text" : "multiple_choice",
+              options: options.length > 1 ? options : undefined,
               placeholder: String(obj.placeholder ?? "").trim() || undefined,
             };
           })
