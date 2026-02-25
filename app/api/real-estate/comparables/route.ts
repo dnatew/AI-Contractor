@@ -35,6 +35,42 @@ async function searchWeb(query: string): Promise<string> {
 }
 
 const LOCAL_RADIUS_KM = 50;
+const PROVINCE_TOKENS = new Set([
+  "AB", "BC", "MB", "NB", "NL", "NS", "NT", "NU", "ON", "PE", "QC", "SK", "YT",
+  "ALBERTA", "BRITISH COLUMBIA", "MANITOBA", "NEW BRUNSWICK", "NEWFOUNDLAND", "NOVA SCOTIA",
+  "ONTARIO", "PRINCE EDWARD ISLAND", "QUEBEC", "SASKATCHEWAN", "NORTHWEST TERRITORIES", "NUNAVUT", "YUKON",
+]);
+
+function parseAddressContext(rawAddress: string, fallbackProvince: string) {
+  const parts = rawAddress
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  if (parts.length === 0) {
+    return { fullAddress: rawAddress, city: "", province: fallbackProvince };
+  }
+
+  let province = fallbackProvince;
+  let city = "";
+
+  const last = parts[parts.length - 1].toUpperCase();
+  const secondLast = parts.length > 1 ? parts[parts.length - 2].toUpperCase() : "";
+  const hasProvinceAtEnd = PROVINCE_TOKENS.has(last);
+  const hasProvinceBeforePostal = PROVINCE_TOKENS.has(secondLast);
+
+  if (hasProvinceAtEnd) {
+    province = parts[parts.length - 1];
+    city = parts.length > 1 ? parts[parts.length - 2] : "";
+  } else if (hasProvinceBeforePostal) {
+    province = parts[parts.length - 2];
+    city = parts.length > 2 ? parts[parts.length - 3] : "";
+  } else if (parts.length > 1) {
+    city = parts[parts.length - 1];
+  }
+
+  return { fullAddress: rawAddress, city, province };
+}
 
 function toRad(n: number) {
   return (n * Math.PI) / 180;
@@ -117,16 +153,15 @@ export async function POST(req: NextRequest) {
   const estimate = project.estimates[0];
   const quotedCost = estimate?.confirmedAmount ?? estimate?.grandTotal;
 
-  const neighborhoodContext = project.neighborhoodTier
-    ? ` Neighborhood: ${project.neighborhoodTier}.`
-    : "";
-
   const fullAddr = project.addressDetails || project.address;
+  const addressContext = parseAddressContext(fullAddr, project.province);
   const tierLabel = project.neighborhoodTier ? project.neighborhoodTier.replace(/_/g, " ") : "";
-  const city = project.address.split(",").slice(-1)[0]?.trim() || project.address;
+  const locationText = addressContext.city
+    ? `${addressContext.city} ${addressContext.province}`
+    : `${addressContext.province}`;
 
-  const areaQuery = `homes sold ${city} ${project.province} Canada ${project.sqft} sqft recent 2024 2025`;
-  const broaderQuery = `average home price ${project.province} Canada ${tierLabel || "suburban"} detached ${project.sqft} sqft`;
+  const areaQuery = `homes sold near "${addressContext.fullAddress}" ${locationText} Canada ${project.sqft} sqft recent 2024 2025`;
+  const broaderQuery = `comparable home values ${locationText} Canada ${tierLabel || "suburban"} detached ${project.sqft} sqft`;
   const renoQuery = `renovation ROI percentage value increase Canada ${allItems.slice(0, 3).map((s) => s.task.split("—")[0].trim()).join(" ")}`;
   const [areaResults, broaderResults, renoResults] = await Promise.all([
     searchWeb(areaQuery),
@@ -214,8 +249,9 @@ You MUST return at least 3 comparables. This is non-negotiable. Broaden as neede
 ${userCompsText}
 
 PROJECT:
-- Address: ${project.address}${project.addressDetails ? ` (${project.addressDetails})` : ""}
-- Province: ${project.province}${coordsContext}
+- Full address (use this exact locality, including city): ${addressContext.fullAddress}
+- City: ${addressContext.city || "not provided"}
+- Province: ${addressContext.province}${coordsContext}
 - Square footage: ${project.sqft} sqft
 - Current purchase price: ${currentPurchasePrice && currentPurchasePrice > 0 ? `$${currentPurchasePrice.toLocaleString()} CAD` : "not provided"}
 - Purchase quality vs neighbourhood: ${purchasePosition ?? "not provided"}
@@ -256,6 +292,7 @@ Return a JSON object:
 
 If the user provided their own comparables, use those as your anchor data and calculate value adjustments between them.
 User-entered comparables are higher priority and more actionable than listing-derived assumptions.
+Always treat the full project address (street + city + province) as the location anchor for comparables.
 Focus on percentage-based value add — it's universal across markets.`;
 
   const openai = await getOpenAI();
@@ -272,7 +309,7 @@ Focus on percentage-based value add — it's universal across markets.`;
         {
           role: "system",
           content:
-            "You are a Canadian real estate analyst. CRITICAL WEIGHTING: local comparables (same city, same market type) = full weight. Out-of-area data = reference only, discounted by how well the market type matches (rural ≠ city ≠ remote ≠ resort). Identify the market type first, find matching comparables, state the weight for each. You MUST find at least 3. Output only valid JSON. Use CAD.",
+            "You are a Canadian real estate analyst. CRITICAL WEIGHTING: local comparables (same city, same market type) = full weight. Out-of-area data = reference only, discounted by how well the market type matches (rural ≠ city ≠ remote ≠ resort). Use the full project address (street + city + province) as the location anchor. Identify the market type first, find matching comparables, state the weight for each. You MUST find at least 3. Output only valid JSON. Use CAD.",
         },
         { role: "user", content: prompt },
       ],
@@ -286,7 +323,7 @@ Focus on percentage-based value add — it's universal across markets.`;
         {
           role: "system",
           content:
-            "You are a Canadian real estate analyst. Local comparables = full weight. Out-of-area = reference only, discounted by market type match (rural ≠ city ≠ remote ≠ resort). State the weight for each comparable. You MUST find at least 3. Output only valid JSON. Use CAD.",
+            "You are a Canadian real estate analyst. Local comparables = full weight. Out-of-area = reference only, discounted by market type match (rural ≠ city ≠ remote ≠ resort). Use the full project address (street + city + province) as the location anchor. State the weight for each comparable. You MUST find at least 3. Output only valid JSON. Use CAD.",
         },
         { role: "user", content: prompt },
       ],

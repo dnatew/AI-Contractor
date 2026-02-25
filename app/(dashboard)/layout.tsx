@@ -2,8 +2,6 @@ import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
-import { signOut } from "next-auth/react";
 import { LogoutButton } from "@/components/logout-button";
 
 export default async function DashboardLayout({
@@ -19,10 +17,10 @@ export default async function DashboardLayout({
       <header className="border-b border-slate-200 bg-white sticky top-0 z-10 shadow-sm">
         <div className="container mx-auto px-4 h-14 flex items-center justify-between">
           <Link href="/projects" className="font-semibold text-slate-900">
-            AI Invoice Maker
+            AI Contractor
           </Link>
           <nav className="flex items-center gap-6">
-            <Link href="/projects" className="text-sm text-slate-600 hover:text-slate-900">Projects</Link>
+            <Link href="/projects" className="text-sm text-slate-600 hover:text-slate-900">Dashboard</Link>
             <Link href="/settings" className="text-sm text-slate-600 hover:text-slate-900">Settings</Link>
           </nav>
           <div className="flex items-center gap-4">
