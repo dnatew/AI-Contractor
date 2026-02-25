@@ -174,19 +174,47 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
     return Array.isArray(a?.lineWarnings) ? a.lineWarnings : [];
   }, [estimate]);
 
-  async function fetchEstimateWizard() {
+  const priorRefinementAnswers = useMemo(() => {
+    const a = estimate?.assumptions as { refinementAnswers?: Record<string, string> } | null;
+    return (a?.refinementAnswers ?? {}) as Record<string, string>;
+  }, [estimate]);
+
+  async function fetchEstimateWizard(options?: { autoGenerateIfEmpty?: boolean }) {
     setLoadingWizard(true);
     try {
+      const mergedAnswers = { ...priorRefinementAnswers, ...wizardAnswers };
       const res = await fetch("/api/estimates/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, mode: "questions" }),
+        body: JSON.stringify({
+          projectId,
+          mode: "questions",
+          estimatePrompt: estimatePrompt.trim() || undefined,
+          refinementAnswers: mergedAnswers,
+        }),
       });
-      if (!res.ok) return false;
+      if (!res.ok) {
+        if (options?.autoGenerateIfEmpty) {
+          await runEstimateGeneration();
+        }
+        return false;
+      }
       const data = await res.json();
       if (Array.isArray(data.questions) && data.questions.length > 0) {
         setWizardQuestions(data.questions);
+        setWizardAnswers((prev) => {
+          const next: Record<string, string> = { ...prev };
+          for (const q of data.questions as Array<{ id: string }>) {
+            if (!next[q.id] && priorRefinementAnswers[q.id]) {
+              next[q.id] = priorRefinementAnswers[q.id];
+            }
+          }
+          return next;
+        });
         return true;
+      }
+      if (options?.autoGenerateIfEmpty) {
+        await runEstimateGeneration();
       }
       return false;
     } finally {
@@ -194,20 +222,17 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
     }
   }
 
-  async function generateEstimate(options?: { skipWizard?: boolean }) {
-    if (!options?.skipWizard && wizardQuestions.length === 0 && !estimatePrompt.trim()) {
-      const opened = await fetchEstimateWizard();
-      if (opened) return;
-    }
+  async function runEstimateGeneration() {
     setGenerating(true);
     try {
+      const mergedAnswers = { ...priorRefinementAnswers, ...wizardAnswers };
       const res = await fetch("/api/estimates/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           projectId,
           estimatePrompt: estimatePrompt.trim() || undefined,
-          refinementAnswers: wizardAnswers,
+          refinementAnswers: mergedAnswers,
           overrides,
         }),
       });
@@ -219,6 +244,18 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
     } finally {
       setGenerating(false);
     }
+  }
+
+  async function generateEstimate(options?: { skipWizard?: boolean; autoRefine?: boolean }) {
+    if (options?.autoRefine) {
+      await fetchEstimateWizard({ autoGenerateIfEmpty: true });
+      return;
+    }
+    if (!options?.skipWizard && wizardQuestions.length === 0 && !estimatePrompt.trim()) {
+      const opened = await fetchEstimateWizard();
+      if (opened) return;
+    }
+    await runEstimateGeneration();
   }
 
   if (!estimate) {
@@ -234,9 +271,9 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
           </div>
         </CardHeader>
         <CardContent>
-          <Button onClick={() => generateEstimate({ skipWizard: true })} disabled={generating} className="gap-2">
+          <Button onClick={() => generateEstimate({ autoRefine: true })} disabled={generating || loadingWizard} className="gap-2">
             <Sparkles className="size-4" />
-            {generating ? "Generating..." : "Generate Estimate"}
+            {generating || loadingWizard ? "Generating..." : "Generate Estimate"}
           </Button>
         </CardContent>
       </Card>
@@ -269,9 +306,9 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
             </div>
           </div>
           <div className="flex gap-2 items-center">
-            <Button size="sm" variant="outline" onClick={() => generateEstimate({ skipWizard: true })} disabled={generating} className="gap-1.5">
+            <Button size="sm" variant="outline" onClick={() => generateEstimate({ autoRefine: true })} disabled={generating || loadingWizard} className="gap-1.5">
               <RefreshCw className={`size-3.5 ${generating ? "animate-spin" : ""}`} />
-              {generating ? "Updating..." : "Regenerate"}
+              {generating || loadingWizard ? "Updating..." : "Regenerate"}
             </Button>
             <Badge variant="secondary" className="capitalize">{estimate.status}</Badge>
           </div>

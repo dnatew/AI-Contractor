@@ -15,6 +15,9 @@ const ESTIMATE_WIZARD_PROMPT = `You generate a short estimate refinement wizard 
 
 Given project + scope context, return 4-6 concise questions that improve estimate quality.
 Prioritize questions affecting quantity, material cost, labor intensity, and overlap clarity.
+Generate a NEXT-PASS trivia set: ask for new useful details, not repeats.
+Do not ask for labor/material rates already captured in user pricing settings.
+Do not repeat already-answered questions.
 
 Return ONLY JSON:
 [
@@ -26,6 +29,20 @@ type EstimateOverride = {
   materialUnitCost?: number;
   laborHours?: number;
   materialName?: string;
+};
+
+const MARKUP_PERCENT = 0.15;
+
+type AiEstimateLine = {
+  scopeItemId: string;
+  quantity?: number;
+  unit?: string;
+  laborHours?: number;
+  laborRate?: number;
+  materialUnitCost?: number;
+  materialName?: string;
+  pricingSource?: "user" | "default";
+  notes?: string;
 };
 
 export async function POST(req: NextRequest) {
@@ -51,12 +68,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "projectId required" }, { status: 400 });
   }
 
-  const [project, userPricing] = await Promise.all([
+  const [project, userPricing, latestEstimate] = await Promise.all([
     prisma.project.findFirst({
       where: { id: projectId, userId: session.user.id },
       include: { scopes: { include: { items: true } } },
     }),
     prisma.userPricing.findMany({ where: { userId: session.user.id } }),
+    prisma.estimate.findFirst({
+      where: { projectId },
+      orderBy: { updatedAt: "desc" },
+      select: { assumptions: true },
+    }),
   ]);
 
   if (!project) {
@@ -72,6 +94,19 @@ export async function POST(req: NextRequest) {
   }
 
   if (mode === "questions") {
+    const previousAssumptions =
+      (latestEstimate?.assumptions as {
+        refinementAnswers?: Record<string, string>;
+        estimatePrompt?: string;
+      } | null) ?? null;
+    const priorAnswers = {
+      ...(previousAssumptions?.refinementAnswers ?? {}),
+      ...refinementAnswers,
+    };
+
+    const userPricingHints = userPricing
+      .map((p) => `${p.key}:${p.rate}/${p.unit}`)
+      .join(", ");
     const scopeSummary = allScopeItems
       .map((i) => `${i.segment}: ${i.task} | ${i.quantity} ${i.unit} | ${i.material} | ${i.laborHours ?? 0}h`)
       .join("\n");
@@ -80,6 +115,11 @@ export async function POST(req: NextRequest) {
       `Sqft: ${project.sqft}`,
       `Job description: ${project.jobPrompt ?? "not provided"}`,
       `Notes: ${project.notes ?? "none"}`,
+      `User pricing settings (already known): ${userPricingHints || "none"}`,
+      `Previous estimate prompt: ${(previousAssumptions?.estimatePrompt ?? estimatePrompt) || "none"}`,
+      `Already answered refinement inputs:\n${
+        Object.entries(priorAnswers).map(([k, v]) => `- ${k}: ${v}`).join("\n") || "- none"
+      }`,
       `Scope:\n${scopeSummary}`,
     ].join("\n\n");
 
@@ -107,6 +147,7 @@ export async function POST(req: NextRequest) {
             };
           })
           .filter((q) => q.id && q.question)
+          .filter((q) => !(priorAnswers[q.id]?.trim()))
           .slice(0, 6);
       }
     } catch {
@@ -118,13 +159,129 @@ export async function POST(req: NextRequest) {
   const pricingMap = Object.fromEntries(
     userPricing.map((p) => [p.key, { rate: p.rate, unit: p.unit }])
   );
-  const result = computeEstimate(project.province, allScopeItems, pricingMap);
+  const baselineResult = computeEstimate(project.province, allScopeItems, pricingMap);
+  let usedAiPricing = false;
+
+  const pricingHints = userPricing
+    .map((p) => `- ${p.key}: ${p.rate}/${p.unit}`)
+    .join("\n");
+  const scopeForAi = allScopeItems
+    .map((i) => `- id=${i.id} | ${i.segment}: ${i.task} | ${i.quantity} ${i.unit} | material=${i.material} | laborHoursHint=${i.laborHours ?? 0}`)
+    .join("\n");
+  const refinementForAi = Object.entries(refinementAnswers)
+    .filter(([, v]) => v?.trim())
+    .map(([k, v]) => `- ${k}: ${v}`)
+    .join("\n");
+
+  let aiLines: AiEstimateLine[] = [];
+  try {
+    const openai = await getOpenAI();
+    const aiRes = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a Canadian renovation estimator. Produce realistic labor/material rates per scope line. Use specific trade reasoning, avoid placeholder micro-costs, and output only valid JSON.",
+        },
+        {
+          role: "user",
+          content: `Project: ${project.address}, ${project.province}, ${project.sqft} sqft
+Job description: ${project.jobPrompt ?? "not provided"}
+Extra estimate prompt: ${estimatePrompt || "none"}
+Refinement answers:
+${refinementForAi || "- none"}
+
+User pricing hints:
+${pricingHints || "- none"}
+
+Scope lines:
+${scopeForAi}
+
+Return JSON array with one item per scope line:
+[
+  {
+    "scopeItemId": string,
+    "quantity": number,
+    "unit": string,
+    "laborHours": number,
+    "laborRate": number,
+    "materialUnitCost": number,
+    "materialName": string,
+    "pricingSource": "user" | "default",
+    "notes": string
+  }
+]
+Rules:
+- Keep quantity/unit aligned with scope intent.
+- Labor/material must be plausible for MB/Canada.
+- Do not use token placeholder values like 4.95 for full package lines unless truly justified.
+- If user pricing hints directly match a line, set pricingSource to "user".`,
+        },
+      ],
+      max_tokens: 1800,
+    });
+    const aiText = aiRes.choices[0]?.message?.content ?? "[]";
+    const parsed = JSON.parse(aiText.replace(/```json\n?|\n?```/g, "").trim()) as unknown;
+    if (Array.isArray(parsed)) {
+      aiLines = parsed
+        .map((x) => x as Record<string, unknown>)
+        .map((x) => ({
+          scopeItemId: String(x.scopeItemId ?? ""),
+          quantity: typeof x.quantity === "number" ? x.quantity : undefined,
+          unit: typeof x.unit === "string" ? x.unit : undefined,
+          laborHours: typeof x.laborHours === "number" ? x.laborHours : undefined,
+          laborRate: typeof x.laborRate === "number" ? x.laborRate : undefined,
+          materialUnitCost: typeof x.materialUnitCost === "number" ? x.materialUnitCost : undefined,
+          materialName: typeof x.materialName === "string" ? x.materialName : undefined,
+          pricingSource: (x.pricingSource === "user" ? "user" : "default") as "user" | "default",
+          notes: typeof x.notes === "string" ? x.notes : undefined,
+        }))
+        .filter((x) => x.scopeItemId);
+      usedAiPricing = aiLines.length > 0;
+    }
+  } catch {
+    usedAiPricing = false;
+  }
+
+  const aiById = new Map(aiLines.map((l) => [l.scopeItemId, l]));
 
   const scopeById = new Map(allScopeItems.map((s) => [s.id, s]));
   const lineWarnings: string[] = [];
   const overlapWarnings = new Set<string>();
+  const baseLines = baselineResult.lines.map((line) => {
+    const aiLine = aiById.get(line.scopeItemId);
+    const quantity = aiLine?.quantity && aiLine.quantity > 0 ? aiLine.quantity : line.quantity;
+    const unit = aiLine?.unit?.trim() ? aiLine.unit.trim() : line.unit;
+    const laborHours = aiLine?.laborHours != null && aiLine.laborHours >= 0 ? aiLine.laborHours : line.laborHours;
+    const laborRate = aiLine?.laborRate != null && aiLine.laborRate > 0 ? aiLine.laborRate : line.laborRate;
+    const materialUnitCost = aiLine?.materialUnitCost != null && aiLine.materialUnitCost > 0 ? aiLine.materialUnitCost : line.materialUnitCost;
+    const materialName = aiLine?.materialName?.trim() ? aiLine.materialName.trim() : line.materialName;
+    const pricingSource = aiLine?.pricingSource ?? line.pricingSource;
+    const laborCost = (laborHours ?? 0) * laborRate;
+    const materialCost = quantity * materialUnitCost;
+    const subtotal = laborCost + materialCost;
+    const markup = subtotal * MARKUP_PERCENT;
+    const tax = (subtotal + markup) * (baselineResult.assumptions.taxRate ?? 0);
+    return {
+      ...line,
+      quantity,
+      unit,
+      laborHours,
+      laborRate,
+      materialUnitCost,
+      materialName,
+      pricingSource,
+      laborCost,
+      materialCost,
+      subtotal,
+      markup,
+      tax,
+      total: subtotal + markup + tax,
+    };
+  });
 
-  const adjustedLines = result.lines.map((line) => {
+  const adjustedLines = baseLines.map((line) => {
     const override = overrides[line.scopeItemId] ?? {};
     const scopeItem = scopeById.get(line.scopeItemId);
     let quantity = line.quantity;
@@ -152,8 +309,8 @@ export async function POST(req: NextRequest) {
     const laborCost = (laborHours ?? 0) * line.laborRate;
     const materialCost = quantity * materialUnitCost;
     const subtotal = laborCost + materialCost;
-    const markup = subtotal * 0.15;
-    const tax = (subtotal + markup) * ((result.assumptions.taxRate ?? 0));
+    const markup = subtotal * MARKUP_PERCENT;
+    const tax = (subtotal + markup) * ((baselineResult.assumptions.taxRate ?? 0));
 
     const taskLower = `${line.segment} ${line.task}`.toLowerCase();
     if (
@@ -236,7 +393,8 @@ export async function POST(req: NextRequest) {
       totalTax: tax,
       grandTotal,
       assumptions: {
-        ...(result.assumptions as object),
+        ...(baselineResult.assumptions as object),
+        estimatorMode: usedAiPricing ? "ai_primary" : "fallback_engine",
         estimatePrompt: estimatePrompt || undefined,
         refinementAnswers,
         lineWarnings: Array.from(new Set([...lineWarnings, ...overlapWarnings])),
@@ -272,13 +430,14 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     estimate: full,
     breakdown: {
-      ...result,
+      ...baselineResult,
       lines: adjustedLines,
       totalLabor,
       totalMaterial,
       markup,
       tax,
       grandTotal,
+      estimatorMode: usedAiPricing ? "ai_primary" : "fallback_engine",
       warnings: Array.from(new Set([...lineWarnings, ...overlapWarnings])),
     },
   });
