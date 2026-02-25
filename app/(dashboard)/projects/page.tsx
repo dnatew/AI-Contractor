@@ -1,5 +1,5 @@
 import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { authOptions, getOrCreateUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import Link from "next/link";
 import {
@@ -39,9 +39,9 @@ function formatRelativeDate(input: Date) {
 
 export default async function ProjectsPage() {
   const session = await getServerSession(authOptions);
-  if (!session?.user?.id) return null;
-
-  const userId = session.user.id;
+  if (!session?.user) return null;
+  const userId = await getOrCreateUserId(session);
+  if (!userId) return null;
   const [
     projectCount,
     userPropertyCount,

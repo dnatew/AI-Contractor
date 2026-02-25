@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getSessionUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 
 export async function GET(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const userId = await getSessionUserId();
+  if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -15,7 +14,7 @@ export async function GET(req: NextRequest) {
   }
 
   const searches = await prisma.flipSearch.findMany({
-    where: { userId: session.user.id, projectId },
+    where: { userId, projectId },
     orderBy: { createdAt: "desc" },
     take: 30,
   });
@@ -24,8 +23,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const userId = await getSessionUserId();
+  if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -35,7 +34,7 @@ export async function POST(req: NextRequest) {
   }
 
   const project = await prisma.project.findFirst({
-    where: { id: body.projectId, userId: session.user.id },
+    where: { id: body.projectId, userId },
     select: { id: true },
   });
   if (!project) {
@@ -44,7 +43,7 @@ export async function POST(req: NextRequest) {
 
   const search = await prisma.flipSearch.create({
     data: {
-      userId: session.user.id,
+      userId,
       projectId: body.projectId,
       title: body.title ?? null,
       purchasePrice: body.purchasePrice ?? 0,
@@ -70,8 +69,8 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const userId = await getSessionUserId();
+  if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -82,7 +81,7 @@ export async function DELETE(req: NextRequest) {
 
   if (id) {
     const existing = await prisma.flipSearch.findFirst({
-      where: { id, userId: session.user.id },
+      where: { id, userId },
     });
     if (!existing) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -93,7 +92,7 @@ export async function DELETE(req: NextRequest) {
 
   if (clearAll && projectId) {
     await prisma.flipSearch.deleteMany({
-      where: { userId: session.user.id, projectId },
+      where: { userId, projectId },
     });
     return NextResponse.json({ ok: true });
   }

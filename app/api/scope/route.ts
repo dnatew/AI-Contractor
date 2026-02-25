@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getSessionUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { z } from "zod";
 
@@ -15,8 +14,8 @@ const createSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const userId = await getSessionUserId();
+  if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -30,7 +29,7 @@ export async function POST(req: NextRequest) {
     where: { id: parsed.data.scopeId },
     include: { project: true },
   });
-  if (!scope || scope.project.userId !== session.user.id) {
+  if (!scope || scope.project.userId !== userId) {
     return NextResponse.json({ error: "Scope not found" }, { status: 404 });
   }
 

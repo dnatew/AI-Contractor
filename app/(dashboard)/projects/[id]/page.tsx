@@ -1,5 +1,5 @@
 import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { authOptions, getOrCreateUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
@@ -14,11 +14,13 @@ export default async function ProjectPage({
   params: Promise<{ id: string }>;
 }) {
   const session = await getServerSession(authOptions);
-  if (!session?.user?.id) redirect("/login");
+  if (!session?.user) redirect("/login");
+  const userId = await getOrCreateUserId(session);
+  if (!userId) redirect("/login");
 
   const { id } = await params;
   const project = await prisma.project.findFirst({
-    where: { id, userId: session.user.id },
+    where: { id, userId },
     include: {
       photos: true,
       scopes: { include: { items: true }, orderBy: { order: "asc" } },

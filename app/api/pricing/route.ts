@@ -1,16 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getSessionUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 
 export async function GET() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const userId = await getSessionUserId();
+  if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const pricing = await prisma.userPricing.findMany({
-    where: { userId: session.user.id },
+    where: { userId },
     orderBy: { key: "asc" },
   });
 
@@ -18,8 +17,8 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const userId = await getSessionUserId();
+  if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -35,10 +34,10 @@ export async function POST(req: NextRequest) {
 
   const pricing = await prisma.userPricing.upsert({
     where: {
-      userId_key: { userId: session.user.id, key: String(key).trim() },
+      userId_key: { userId, key: String(key).trim() },
     },
     create: {
-      userId: session.user.id,
+      userId,
       key: String(key).trim(),
       rate,
       unit: String(unit) || "sqft",

@@ -49,8 +49,20 @@ function fmtShort(n: number) {
   return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD", maximumFractionDigits: 0 }).format(n);
 }
 
-function GroupedEstimateTable({ lines }: { lines: FullLine[] }) {
+type InlineOverride = { quantity?: number; materialUnitCost?: number; laborHours?: number };
+
+function GroupedEstimateTable({
+  lines,
+  overrides,
+  onApplyOverride,
+}: {
+  lines: FullLine[];
+  overrides: Record<string, InlineOverride>;
+  onApplyOverride: (scopeItemId: string, override: InlineOverride) => Promise<void> | void;
+}) {
   const [expandedSegments, setExpandedSegments] = useState<Set<string>>(new Set());
+  const [editing, setEditing] = useState<{ id: string; field: "quantity" | "materialUnitCost" | "laborHours" } | null>(null);
+  const [editingValue, setEditingValue] = useState<string>("");
 
   const grouped = new Map<string, FullLine[]>();
   for (const line of lines) {
@@ -134,7 +146,42 @@ function GroupedEstimateTable({ lines }: { lines: FullLine[] }) {
                         {hasDetail && (
                           <p className="text-[11px] text-slate-400 tabular-nums flex items-center justify-end gap-1 mt-0.5">
                             <Clock className="size-2.5" />
-                            {line.laborHours!.toFixed(1)}h × ${line.laborRate!.toFixed(0)}/hr
+                            {editing && editing.id === line.scopeItemId && editing.field === "laborHours" ? (
+                              <Input
+                                type="number"
+                                value={editingValue}
+                                onChange={(e) => setEditingValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    const v = parseFloat(editingValue);
+                                    setEditing(null);
+                                    setEditingValue("");
+                                    onApplyOverride(line.scopeItemId, { laborHours: Number.isFinite(v) ? v : 0 });
+                                  } else if (e.key === "Escape") {
+                                    setEditing(null);
+                                    setEditingValue("");
+                                  }
+                                }}
+                                onBlur={() => {
+                                  const v = parseFloat(editingValue);
+                                  setEditing(null);
+                                  setEditingValue("");
+                                  onApplyOverride(line.scopeItemId, { laborHours: Number.isFinite(v) ? v : 0 });
+                                }}
+                                className="w-20 h-7 text-right"
+                                autoFocus
+                              />
+                            ) : (
+                              <button
+                                onClick={() => {
+                                  setEditing({ id: line.scopeItemId, field: "laborHours" });
+                                  setEditingValue(String(line.laborHours ?? 0));
+                                }}
+                                className="text-[11px] text-slate-400 tabular-nums flex items-center justify-end gap-1"
+                              >
+                                {line.laborHours!.toFixed(1)}h × ${line.laborRate!.toFixed(0)}/hr
+                              </button>
+                            )}
                           </p>
                         )}
                       </div>
@@ -146,7 +193,42 @@ function GroupedEstimateTable({ lines }: { lines: FullLine[] }) {
                           <div className="mt-0.5">
                             <p className="text-[11px] text-slate-400 tabular-nums flex items-center justify-end gap-1">
                               <Package className="size-2.5" />
-                              {line.quantity?.toFixed(0)} {line.unit} × ${line.materialUnitCost?.toFixed(2)}
+                              {editing && editing.id === line.scopeItemId && editing.field === "quantity" ? (
+                                <Input
+                                  type="number"
+                                  value={editingValue}
+                                  onChange={(e) => setEditingValue(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") {
+                                      const v = parseFloat(editingValue);
+                                      setEditing(null);
+                                      setEditingValue("");
+                                      onApplyOverride(line.scopeItemId, { quantity: Number.isFinite(v) ? v : 0 });
+                                    } else if (e.key === "Escape") {
+                                      setEditing(null);
+                                      setEditingValue("");
+                                    }
+                                  }}
+                                  onBlur={() => {
+                                    const v = parseFloat(editingValue);
+                                    setEditing(null);
+                                    setEditingValue("");
+                                    onApplyOverride(line.scopeItemId, { quantity: Number.isFinite(v) ? v : 0 });
+                                  }}
+                                  className="w-20 h-7 text-right"
+                                  autoFocus
+                                />
+                              ) : (
+                                <button
+                                  onClick={() => {
+                                    setEditing({ id: line.scopeItemId, field: "quantity" });
+                                    setEditingValue(String(line.quantity ?? 0));
+                                  }}
+                                  className="text-[11px] text-slate-400 tabular-nums flex items-center justify-end gap-1"
+                                >
+                                  {line.quantity?.toFixed(0)} {line.unit} × ${line.materialUnitCost?.toFixed(2)}
+                                </button>
+                              )}
                             </p>
                             {line.materialName && line.materialName !== "general" && line.materialName !== "included in rate" && (
                               <p className="text-[10px] text-slate-400 capitalize">{line.materialName}</p>
@@ -276,6 +358,34 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
       setGenerating(false);
     }
   }
+ 
+  async function runReprice() {
+    setGenerating(true);
+    try {
+      const mergedAnswers = { ...priorRefinementAnswers, ...wizardAnswers };
+      const res = await fetch("/api/estimates/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId,
+          mode: "reprice",
+          estimatePrompt: estimatePrompt.trim() || undefined,
+          refinementAnswers: mergedAnswers,
+          overrides,
+        }),
+      });
+      if (res.ok) {
+        setWizardQuestions([]);
+        setWizardIndex(0);
+        setWizardAnswers({});
+        router.refresh();
+      } else {
+        console.error("reprice failed", await res.text());
+      }
+    } finally {
+      setGenerating(false);
+    }
+  }
 
   async function generateEstimate(options?: { skipWizard?: boolean; autoRefine?: boolean }) {
     if (options?.autoRefine) {
@@ -286,6 +396,15 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
       const opened = await fetchEstimateWizard();
       if (opened) return;
     }
+    await runEstimateGeneration();
+  }
+
+  async function applyInlineOverride(scopeItemId: string, partial: InlineOverride) {
+    setOverrides((prev) => {
+      const next = { ...prev, [scopeItemId]: { ...(prev[scopeItemId] ?? {}), ...partial } };
+      return next;
+    });
+    // Persist by regenerating the estimate with the new overrides
     await runEstimateGeneration();
   }
 
@@ -348,6 +467,10 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
             <Button size="sm" variant="outline" onClick={() => generateEstimate({ autoRefine: true })} disabled={generating || loadingWizard} className="gap-1.5">
               <RefreshCw className={`size-3.5 ${generating ? "animate-spin" : ""}`} />
               {generating || loadingWizard ? "Updating..." : "Regenerate"}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => runReprice()} disabled={generating || loadingWizard} className="gap-1.5">
+              <Package className="size-3.5" />
+              {generating ? "Checking..." : "Check cost numbers"}
             </Button>
             <Badge variant="secondary" className="capitalize">{estimate.status}</Badge>
           </div>
@@ -462,7 +585,7 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
         )}
 
         {/* Grouped table */}
-        <GroupedEstimateTable lines={estimate.lines} />
+        <GroupedEstimateTable lines={estimate.lines} overrides={overrides} onApplyOverride={applyInlineOverride} />
 
         {!!estimate?.lines.length && (
           <div className="rounded-lg border border-slate-200 p-3 space-y-3">

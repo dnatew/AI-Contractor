@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getSessionUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 
 export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const userId = await getSessionUserId();
+  if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -21,7 +20,7 @@ export async function POST(req: NextRequest) {
     include: { project: true },
   });
 
-  if (!estimate || estimate.project.userId !== session.user.id) {
+  if (!estimate || estimate.project.userId !== userId) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 

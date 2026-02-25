@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getSessionUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { computeEstimate } from "@/lib/pricing/canadaPricingEngine";
 
@@ -55,8 +54,8 @@ type AiEstimateLine = {
 };
 
 export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const userId = await getSessionUserId();
+  if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -79,10 +78,10 @@ export async function POST(req: NextRequest) {
 
   const [project, userPricing, latestEstimate] = await Promise.all([
     prisma.project.findFirst({
-      where: { id: projectId, userId: session.user.id },
+      where: { id: projectId, userId },
       include: { scopes: { include: { items: true } } },
     }),
-    prisma.userPricing.findMany({ where: { userId: session.user.id } }),
+    prisma.userPricing.findMany({ where: { userId } }),
     prisma.estimate.findFirst({
       where: { projectId },
       orderBy: { updatedAt: "desc" },
@@ -387,11 +386,81 @@ Rules:
     }
   }
 
-  const totalLabor = adjustedLines.reduce((s, l) => s + l.laborCost, 0);
-  const totalMaterial = adjustedLines.reduce((s, l) => s + l.materialCost, 0);
-  const markup = adjustedLines.reduce((s, l) => s + l.markup, 0);
-  const tax = adjustedLines.reduce((s, l) => s + l.tax, 0);
-  const grandTotal = totalLabor + totalMaterial + markup + tax;
+  let totalLabor = adjustedLines.reduce((s, l) => s + l.laborCost, 0);
+  let totalMaterial = adjustedLines.reduce((s, l) => s + l.materialCost, 0);
+  let markup = adjustedLines.reduce((s, l) => s + l.markup, 0);
+  let tax = adjustedLines.reduce((s, l) => s + l.tax, 0);
+  let grandTotal = totalLabor + totalMaterial + markup + tax;
+
+  // If caller asked to reprice materials, ask the AI to produce material breakdowns and updated unit costs.
+  if (mode === "reprice") {
+    try {
+      const openai = await getOpenAI();
+      const materialPrompt = [
+        "You are a construction materials estimator for Canada. Given the project location and the scope lines, produce a JSON array of objects with exact material breakdowns and suggested realistic unit costs for each scope line.",
+        `Project: ${project.address}, ${project.province}, ${project.sqft} sqft`,
+        `Scope lines:\n${scopeForAi}`,
+        "Return ONLY valid JSON in this format:\n[\n  {\n    \"scopeItemId\": \"string\",\n    \"materialUnitCost\": number, // suggested total cost per unit used in estimate\n    \"materialList\": [ { \"name\": \"string\", \"quantity\": number, \"unit\": \"string\", \"unitCost\": number } ],\n    \"notes\": \"string\"\n  }\n]",
+      ].join("\n\n");
+
+      const mRes = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: "You are an expert estimator and cost accountant for renovation materials in Canada. Be conservative and realistic." },
+          { role: "user", content: materialPrompt },
+        ],
+        max_tokens: 1200,
+      });
+      const mText = mRes.choices[0]?.message?.content ?? "[]";
+      let parsedMaterials: Array<Record<string, unknown>> = [];
+      try {
+        parsedMaterials = JSON.parse(mText.replace(/```json\n?|\n?```/g, "").trim()) as Array<Record<string, unknown>>;
+      } catch (e) {
+        // ignore parse error - fallback to previous pricing
+        parsedMaterials = [];
+      }
+
+      const materialMap = new Map<string, { materialUnitCost?: number; materialList?: any[]; notes?: string }>();
+      for (const obj of parsedMaterials) {
+        const id = String(obj.scopeItemId ?? "");
+        const cost = typeof obj.materialUnitCost === "number" ? obj.materialUnitCost : undefined;
+        const list = Array.isArray(obj.materialList) ? obj.materialList : undefined;
+        const notes = typeof obj.notes === "string" ? obj.notes : undefined;
+        if (id) materialMap.set(id, { materialUnitCost: cost, materialList: list, notes });
+      }
+
+      // Apply material overrides to adjustedLines
+      for (const l of adjustedLines) {
+        const m = materialMap.get(l.scopeItemId);
+        if (m && typeof m.materialUnitCost === "number" && m.materialUnitCost > 0) {
+          l.materialUnitCost = m.materialUnitCost;
+          l.materialCost = (l.quantity ?? 0) * l.materialUnitCost;
+          l.subtotal = (l.laborCost ?? 0) + l.materialCost;
+          l.markup = l.subtotal * MARKUP_PERCENT;
+          l.tax = (l.subtotal + l.markup) * (baselineResult.assumptions.taxRate ?? 0);
+          l.total = l.subtotal + l.markup + l.tax;
+          l.pricingSource = "user";
+        }
+      }
+
+      // Recalculate totals after reprice
+      const newTotalLabor = adjustedLines.reduce((s, l) => s + l.laborCost, 0);
+      const newTotalMaterial = adjustedLines.reduce((s, l) => s + l.materialCost, 0);
+      const newMarkup = adjustedLines.reduce((s, l) => s + l.markup, 0);
+      const newTax = adjustedLines.reduce((s, l) => s + l.tax, 0);
+      const newGrand = newTotalLabor + newTotalMaterial + newMarkup + newTax;
+
+      // overwrite totals for downstream create
+      totalLabor = newTotalLabor;
+      totalMaterial = newTotalMaterial;
+      markup = newMarkup;
+      tax = newTax;
+      grandTotal = newGrand;
+    } catch (e) {
+      // if reprice fails, continue with baseline adjustedLines
+      console.error("reprice error", e);
+    }
+  }
 
   // Create or replace draft estimate (never touch sealed)
   const existing = await prisma.estimate.findFirst({

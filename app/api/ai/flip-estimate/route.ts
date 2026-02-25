@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getSessionUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 
 async function getOpenAI() {
@@ -78,8 +77,8 @@ function computeROIStats(props: PropInput[], renoCostHint: number) {
 }
 
 export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const userId = await getSessionUserId();
+  if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -100,7 +99,7 @@ export async function POST(req: NextRequest) {
   }
 
   const project = await prisma.project.findFirst({
-    where: { id: projectId, userId: session.user.id },
+    where: { id: projectId, userId },
     include: {
       scopes: { include: { items: true } },
       estimates: { orderBy: { createdAt: "desc" }, take: 1 },
@@ -113,7 +112,7 @@ export async function POST(req: NextRequest) {
 
   if (userProperties.length === 0) {
     const dbProps = await prisma.userProperty.findMany({
-      where: { userId: session.user.id },
+      where: { userId },
     });
     userProperties = dbProps.map((p) => ({
       description: p.description,

@@ -1,15 +1,17 @@
 import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { authOptions, getOrCreateUserId } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { PricingSettings } from "@/components/settings/PricingSettings";
 
 export default async function SettingsPage() {
   const session = await getServerSession(authOptions);
-  if (!session?.user?.id) redirect("/login");
+  if (!session?.user) redirect("/login");
+  const userId = await getOrCreateUserId(session);
+  if (!userId) redirect("/login");
 
   const pricing = await prisma.userPricing.findMany({
-    where: { userId: session.user.id },
+    where: { userId },
     orderBy: { key: "asc" },
   });
 

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { authOptions, getOrCreateUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { geocodeAddress } from "@/lib/geocode";
 import { z } from "zod";
@@ -21,8 +21,12 @@ const createSchema = z.object({
 
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const userId = await getOrCreateUserId(session);
+  if (!userId) {
+    return NextResponse.json({ error: "Could not resolve user" }, { status: 401 });
   }
 
   const body = await req.json();
@@ -36,7 +40,7 @@ export async function POST(req: Request) {
 
   const project = await prisma.project.create({
     data: {
-      userId: session.user.id,
+      userId,
       ...parsed.data,
       latitude: coords?.lat ?? null,
       longitude: coords?.lng ?? null,

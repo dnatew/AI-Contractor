@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getSessionUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { geocodeAddress, geocodeMany, type LatLng } from "@/lib/geocode";
 
@@ -91,8 +90,8 @@ function distanceKm(a: LatLng, b: LatLng): number {
 }
 
 export async function POST(req: NextRequest) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const userId = await getSessionUserId();
+  if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -125,7 +124,7 @@ export async function POST(req: NextRequest) {
   }> = body.userComparables ?? [];
 
   const project = await prisma.project.findFirst({
-    where: { id: projectId, userId: session.user.id },
+    where: { id: projectId, userId },
     include: {
       scopes: { include: { items: true } },
       estimates: { orderBy: { createdAt: "desc" }, take: 1 },

@@ -1,14 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getSessionUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const userId = await getSessionUserId();
+  if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -20,7 +19,7 @@ export async function PATCH(
     include: { scope: { include: { project: true } } },
   });
 
-  if (!scopeItem || scopeItem.scope.project.userId !== session.user.id) {
+  if (!scopeItem || scopeItem.scope.project.userId !== userId) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
@@ -45,8 +44,8 @@ export async function DELETE(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.id) {
+  const userId = await getSessionUserId();
+  if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -57,7 +56,7 @@ export async function DELETE(
     include: { scope: { include: { project: true } } },
   });
 
-  if (!scopeItem || scopeItem.scope.project.userId !== session.user.id) {
+  if (!scopeItem || scopeItem.scope.project.userId !== userId) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
