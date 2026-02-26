@@ -52,6 +52,37 @@ export function FlyerLibraryCard() {
     [flyers]
   );
 
+  async function splitPdfIntoPageFiles(file: File): Promise<File[]> {
+    const { PDFDocument } = await import("pdf-lib");
+    const bytes = await file.arrayBuffer();
+    const src = await PDFDocument.load(bytes);
+    const totalPages = src.getPageCount();
+    const baseName = file.name.replace(/\.pdf$/i, "");
+    const splitFiles: File[] = [];
+
+    for (let i = 0; i < totalPages; i++) {
+      const partDoc = await PDFDocument.create();
+      const [page] = await partDoc.copyPages(src, [i]);
+      partDoc.addPage(page);
+      const partBytes = await partDoc.save();
+      if (partBytes.length > MAX_CLIENT_UPLOAD_BYTES) {
+        throw new Error(
+          `Page ${i + 1} is still too large after split (${Math.ceil(partBytes.length / (1024 * 1024))}MB).`
+        );
+      }
+      const partBuffer = partBytes.buffer.slice(
+        partBytes.byteOffset,
+        partBytes.byteOffset + partBytes.byteLength
+      ) as ArrayBuffer;
+      splitFiles.push(
+        new File([partBuffer], `${baseName}-page-${i + 1}.pdf`, {
+          type: "application/pdf",
+        })
+      );
+    }
+    return splitFiles;
+  }
+
   async function loadFlyers() {
     setLoading(true);
     try {
@@ -194,22 +225,59 @@ export function FlyerLibraryCard() {
             const form = e.currentTarget;
             const fileInput = form.querySelector('input[type="file"]') as HTMLInputElement | null;
             if (!fileInput?.files?.length) return;
-            const allFiles = Array.from(fileInput.files);
-            const oversize = allFiles.filter((f) => f.size > MAX_CLIENT_UPLOAD_BYTES);
-            if (oversize.length > 0) {
-              setUploadError(
-                `These files are over 4MB: ${oversize.map((f) => f.name).join(", ")}. ` +
-                  "Please upload smaller PDFs/images."
-              );
-              return;
-            }
             const storeName = (form.querySelector('input[name="storeName"]') as HTMLInputElement | null)?.value;
             const releaseDate = (form.querySelector('input[name="releaseDate"]') as HTMLInputElement | null)?.value;
-            void uploadFlyersInBatches(allFiles, {
-              storeName: storeName?.trim() || undefined,
-              releaseDate: releaseDate?.trim() || undefined,
-            });
-            fileInput.value = "";
+            const selectedFiles = Array.from(fileInput.files);
+            void (async () => {
+              const prepared: File[] = [];
+              const oversizeImages: string[] = [];
+              try {
+                for (const file of selectedFiles) {
+                  const isPdf =
+                    file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+                  if (file.size <= MAX_CLIENT_UPLOAD_BYTES) {
+                    prepared.push(file);
+                    continue;
+                  }
+                  if (isPdf) {
+                    setUploadProgress(`Splitting oversized PDF: ${file.name}`);
+                    const splitPages = await splitPdfIntoPageFiles(file);
+                    prepared.push(...splitPages);
+                  } else {
+                    oversizeImages.push(file.name);
+                  }
+                }
+              } catch (err) {
+                setUploadError(
+                  err instanceof Error
+                    ? err.message
+                    : "Could not split oversized PDF. Please compress or try another file."
+                );
+                setUploadProgress(null);
+                return;
+              }
+
+              if (oversizeImages.length > 0) {
+                setUploadError(
+                  `These images are over 4MB: ${oversizeImages.join(", ")}. ` +
+                    "Please compress those images."
+                );
+                setUploadProgress(null);
+                return;
+              }
+
+              if (prepared.length === 0) {
+                setUploadError("No valid files to upload.");
+                setUploadProgress(null);
+                return;
+              }
+
+              await uploadFlyersInBatches(prepared, {
+                storeName: storeName?.trim() || undefined,
+                releaseDate: releaseDate?.trim() || undefined,
+              });
+              fileInput.value = "";
+            })();
           }}
           className="grid gap-2 md:grid-cols-4"
         >
@@ -222,7 +290,7 @@ export function FlyerLibraryCard() {
           </Button>
           <p className="md:col-span-4 text-[11px] text-slate-500">
             Simple flow: upload flyer, review extracted table rows, edit/confirm values, then use as estimate context.
-            Max 4MB per file.
+            Max 4MB per request; oversized PDFs are auto-split by page before upload.
           </p>
         </form>
 
