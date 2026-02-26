@@ -8,6 +8,7 @@ import {
   type PricePoint,
 } from "@/lib/pricing/fallbackPriceCatalog";
 import { matchFlyerItemsForLine } from "@/lib/flyers";
+import { trackAiUsage } from "@/lib/aiUsage";
 
 async function getOpenAI() {
   const key = process.env.OPENAI_API_KEY;
@@ -16,7 +17,10 @@ async function getOpenAI() {
   return new OpenAI({ apiKey: key });
 }
 
-async function searchSupplierWebWithMeta(query: string): Promise<{
+async function searchSupplierWebWithMeta(
+  query: string,
+  tracking?: { userId: string; projectId?: string; operation?: string }
+): Promise<{
   text: string;
   hitCount: number;
   results: Array<{ title: string; content: string; url: string }>;
@@ -35,6 +39,16 @@ async function searchSupplierWebWithMeta(query: string): Promise<{
       ],
       max_tokens: 500,
     });
+    if (tracking) {
+      await trackAiUsage({
+        userId: tracking.userId,
+        projectId: tracking.projectId,
+        route: "/api/estimates/generate",
+        operation: tracking.operation ?? "supplier_search",
+        model: "gpt-4o-mini-search-preview",
+        usage: res.usage,
+      });
+    }
     const raw = res.choices[0]?.message?.content ?? "[]";
     const parsed = JSON.parse(raw.replace(/```json\n?|\n?```/g, "").trim()) as unknown;
     const results = Array.isArray(parsed)
@@ -229,7 +243,8 @@ function candidateSqftPricingKeys(task: string, material: string): string[] {
 async function buildLaborBenchmarkContext(
   scopeLines: Array<{ task: string; material: string; unit: string }>,
   province: string,
-  userSqftRates?: Record<string, number>
+  userSqftRates?: Record<string, number>,
+  tracking?: { userId: string; projectId?: string }
 ): Promise<{
   contextText: string;
   avgByCategory: Record<string, number>;
@@ -267,7 +282,11 @@ async function buildLaborBenchmarkContext(
       cat: p.cat,
       query: `${p.cat} labor cost per square foot ${province} Canada what homeowners paid forum reddit contractor quote`,
     }));
-  const results = await Promise.all(queries.map((q) => searchSupplierWebWithMeta(q.query)));
+  const results = await Promise.all(
+    queries.map((q) =>
+      searchSupplierWebWithMeta(q.query, tracking ? { ...tracking, operation: "labor_benchmark_search" } : undefined)
+    )
+  );
   const searchQueries = queries.length;
   const searchHits = results.reduce((s, r) => s + r.hitCount, 0);
 
@@ -374,6 +393,7 @@ async function getLaborSuggestionWithOpenAISearch(params: {
   savedRate?: number | null;
   key: string;
   label: string;
+  tracking?: { userId: string; projectId?: string };
 }): Promise<LaborRateSuggestion | null> {
   try {
     const openai = await getOpenAI();
@@ -403,6 +423,17 @@ Rules:
       ],
       max_tokens: 500,
     });
+    if (params.tracking) {
+      await trackAiUsage({
+        userId: params.tracking.userId,
+        projectId: params.tracking.projectId,
+        route: "/api/estimates/generate",
+        operation: "labor_suggestion_search",
+        model: "gpt-4o-mini-search-preview",
+        usage: res.usage,
+        metadata: { category: params.category },
+      });
+    }
     const text = res.choices[0]?.message?.content ?? "{}";
     const parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, "").trim()) as {
       internetAvg?: number;
@@ -676,6 +707,7 @@ export async function POST(req: NextRequest) {
         savedRate: typeof savedRate === "number" ? savedRate : null,
         key: mapped.key,
         label: mapped.label,
+        tracking: { userId, projectId: project.id },
       });
       if (openAiSearchSuggestion) {
         return NextResponse.json({
@@ -746,6 +778,14 @@ export async function POST(req: NextRequest) {
       ],
       max_tokens: 350,
     });
+    await trackAiUsage({
+      userId,
+      projectId: project.id,
+      route: "/api/estimates/generate",
+      operation: "item_questions",
+      model: "gpt-4o-mini",
+      usage: qRes.usage,
+    });
     const text = qRes.choices[0]?.message?.content ?? "[]";
     let questions: Array<{ id: string; question: string; placeholder?: string }> = [];
     try {
@@ -805,6 +845,14 @@ export async function POST(req: NextRequest) {
         { role: "user", content: wizardContext },
       ],
       max_tokens: 450,
+    });
+    await trackAiUsage({
+      userId,
+      projectId: project.id,
+      route: "/api/estimates/generate",
+      operation: "estimate_questions",
+      model: "gpt-4o-mini",
+      usage: qRes.usage,
     });
     const qText = qRes.choices[0]?.message?.content ?? "[]";
     let questions: Array<{ id: string; question: string; placeholder?: string }> = [];
@@ -866,6 +914,14 @@ export async function POST(req: NextRequest) {
           },
         ],
         max_tokens: 700,
+      });
+      await trackAiUsage({
+        userId,
+        projectId: project.id,
+        route: "/api/estimates/generate",
+        operation: "scope_gap_check",
+        model: "gpt-4o-mini",
+        usage: gapRes.usage,
       });
       const gapText = gapRes.choices[0]?.message?.content ?? "[]";
       const parsed = JSON.parse(gapText.replace(/```json\n?|\n?```/g, "").trim()) as unknown;
@@ -1005,7 +1061,8 @@ export async function POST(req: NextRequest) {
   const laborBench = await buildLaborBenchmarkContext(
     estimateScopeItems.map((i) => ({ task: i.task, material: i.material, unit: i.unit })),
     project.province,
-    userSqftRates
+    userSqftRates,
+    { userId, projectId: project.id }
   );
   const aiEstimateInputContext = {
     location: {
@@ -1099,6 +1156,14 @@ Rules:
       ],
       max_tokens: 1800,
     });
+    await trackAiUsage({
+      userId,
+      projectId: project.id,
+      route: "/api/estimates/generate",
+      operation: "estimate_line_pricing",
+      model: "gpt-4o-mini",
+      usage: aiRes.usage,
+    });
     const aiText = aiRes.choices[0]?.message?.content ?? "[]";
     const parsed = JSON.parse(aiText.replace(/```json\n?|\n?```/g, "").trim()) as unknown;
     if (Array.isArray(parsed)) {
@@ -1183,6 +1248,14 @@ Rules:
           },
         ],
         max_tokens: 1000,
+      });
+      await trackAiUsage({
+        userId,
+        projectId: project.id,
+        route: "/api/estimates/generate",
+        operation: "estimate_fill_missing_values",
+        model: "gpt-4o-mini",
+        usage: fillRes.usage,
       });
       const fillText = fillRes.choices[0]?.message?.content ?? "[]";
       const fillParsed = JSON.parse(fillText.replace(/```json\n?|\n?```/g, "").trim()) as unknown;
@@ -1552,7 +1625,13 @@ Rules:
       ]);
       searchSupplierQueries = supplierQueries.length;
       const supplierResults = await Promise.all(
-        supplierQueries.map((q) => searchSupplierWebWithMeta(q))
+        supplierQueries.map((q) =>
+          searchSupplierWebWithMeta(q, {
+            userId,
+            projectId: project.id,
+            operation: "material_supplier_search",
+          })
+        )
       );
       const supplierSearchContext = supplierResults.map((r) => r.text).filter(Boolean).join("\n\n---\n\n");
       const supplierHitCount = supplierResults.reduce((s, r) => s + r.hitCount, 0);
@@ -1589,6 +1668,14 @@ Rules:
           ],
           max_tokens: 1200,
         });
+        await trackAiUsage({
+          userId,
+          projectId: project.id,
+          route: "/api/estimates/generate",
+          operation: "material_reprice",
+          model: "gpt-4o-mini-search-preview",
+          usage: mRes.usage,
+        });
       } catch {
         mRes = await openai.chat.completions.create({
           model: "gpt-4o-mini",
@@ -1597,6 +1684,14 @@ Rules:
             { role: "user", content: materialPrompt },
           ],
           max_tokens: 1200,
+        });
+        await trackAiUsage({
+          userId,
+          projectId: project.id,
+          route: "/api/estimates/generate",
+          operation: "material_reprice_fallback",
+          model: "gpt-4o-mini",
+          usage: mRes.usage,
         });
       }
       const mText = mRes.choices[0]?.message?.content ?? "[]";

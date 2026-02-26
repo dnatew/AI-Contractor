@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { trackAiUsage } from "@/lib/aiUsage";
 
 async function getOpenAI() {
   const key = process.env.OPENAI_API_KEY;
@@ -295,6 +296,14 @@ RULES:
       ],
       max_tokens: 1000,
     });
+    await trackAiUsage({
+      userId,
+      projectId,
+      route: "/api/ai/flip-estimate",
+      operation: "flip_estimate_generate",
+      model: "gpt-4o-mini-search-preview",
+      usage: res.usage,
+    });
   } catch {
     res = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -306,6 +315,14 @@ RULES:
         { role: "user", content: prompt },
       ],
       max_tokens: 1000,
+    });
+    await trackAiUsage({
+      userId,
+      projectId,
+      route: "/api/ai/flip-estimate",
+      operation: "flip_estimate_generate_fallback",
+      model: "gpt-4o-mini",
+      usage: res.usage,
     });
   }
 

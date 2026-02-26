@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { geocodeAddress, geocodeMany, type LatLng } from "@/lib/geocode";
+import { trackAiUsage } from "@/lib/aiUsage";
 
 async function getOpenAI() {
   const key = process.env.OPENAI_API_KEY;
@@ -10,7 +11,7 @@ async function getOpenAI() {
   return new OpenAI({ apiKey: key });
 }
 
-async function searchWeb(query: string): Promise<string> {
+async function searchWeb(query: string, userId: string, projectId: string, operation: string): Promise<string> {
   try {
     const openai = await getOpenAI();
     const res = await openai.chat.completions.create({
@@ -24,6 +25,15 @@ async function searchWeb(query: string): Promise<string> {
         { role: "user", content: query },
       ],
       max_tokens: 500,
+    });
+    await trackAiUsage({
+      userId,
+      projectId,
+      route: "/api/real-estate/comparables",
+      operation,
+      model: "gpt-4o-mini-search-preview",
+      usage: res.usage,
+      metadata: { queryLength: query.length },
     });
     const raw = res.choices[0]?.message?.content ?? "[]";
     const parsed = JSON.parse(raw.replace(/```json\n?|\n?```/g, "").trim()) as unknown;
@@ -173,9 +183,9 @@ export async function POST(req: NextRequest) {
   const broaderQuery = `comparable home values ${locationText} Canada ${tierLabel || "suburban"} detached ${project.sqft} sqft`;
   const renoQuery = `renovation ROI percentage value increase Canada ${allItems.slice(0, 3).map((s) => s.task.split("—")[0].trim()).join(" ")}`;
   const [areaResults, broaderResults, renoResults] = await Promise.all([
-    searchWeb(areaQuery),
-    searchWeb(broaderQuery),
-    searchWeb(renoQuery),
+    searchWeb(areaQuery, userId, projectId, "search_local_comps"),
+    searchWeb(broaderQuery, userId, projectId, "search_broader_comps"),
+    searchWeb(renoQuery, userId, projectId, "search_reno_roi"),
   ]);
 
   const searchContext = [areaResults, broaderResults, renoResults].filter(Boolean).join("\n\n---\n\n");
@@ -324,6 +334,14 @@ Focus on percentage-based value add — it's universal across markets.`;
       ],
       max_tokens: 1500,
     });
+    await trackAiUsage({
+      userId,
+      projectId,
+      route: "/api/real-estate/comparables",
+      operation: "analyze_comparables",
+      model: searchModel,
+      usage: res.usage,
+    });
     usedSearchModel = true;
   } catch {
     res = await openai.chat.completions.create({
@@ -337,6 +355,14 @@ Focus on percentage-based value add — it's universal across markets.`;
         { role: "user", content: prompt },
       ],
       max_tokens: 1500,
+    });
+    await trackAiUsage({
+      userId,
+      projectId,
+      route: "/api/real-estate/comparables",
+      operation: "analyze_comparables_fallback",
+      model: fallbackModel,
+      usage: res.usage,
     });
   }
 

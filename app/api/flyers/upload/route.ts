@@ -3,6 +3,9 @@ import { getSessionUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { uploadPhoto } from "@/lib/storage";
 import { normalizeTokens } from "@/lib/flyers";
+import { trackAiUsage } from "@/lib/aiUsage";
+import { mkdir, writeFile } from "fs/promises";
+import path from "path";
 
 const MAX_FLYER_FILE_BYTES = 4 * 1024 * 1024; // keep under common serverless payload limits
 const MAX_FLYER_FILES_PER_REQUEST = 6;
@@ -40,7 +43,21 @@ function parseDateInput(value?: string): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-async function extractFlyerData(buffer: Buffer, filename: string): Promise<OcrFlyerPayload> {
+async function saveFlyerFileLocally(buffer: Buffer, filename: string, userId: string): Promise<string> {
+  const folder = `flyers-${userId}`;
+  const uploadDir = path.join(process.cwd(), "public", "uploads", folder);
+  await mkdir(uploadDir, { recursive: true });
+  const safeName = `${Date.now()}-${filename.replace(/[^a-zA-Z0-9.-]/g, "_")}`;
+  const filePath = path.join(uploadDir, safeName);
+  await writeFile(filePath, buffer);
+  return `/uploads/${folder}/${safeName}`;
+}
+
+async function extractFlyerData(
+  buffer: Buffer,
+  filename: string,
+  userId: string
+): Promise<OcrFlyerPayload> {
   const openai = await getOpenAI();
   const extractionPrompt =
     "Extract hardware store flyer products into JSON. Return ONLY valid JSON: {storeName?:string,releaseDate?:string,parsedSummary?:string,items:[{name:string,unitLabel?:string,price:number,promoNotes?:string,estimateUseCases?:string[],rawText?:string}]}. Include 3-60 items. Use CAD prices only. estimateUseCases should describe renovation estimate tasks this item can support (e.g., tile install, backsplash, trim, flooring, paint prep).";
@@ -69,6 +86,18 @@ async function extractFlyerData(buffer: Buffer, filename: string): Promise<OcrFl
           },
         ],
         max_output_tokens: 1800,
+      });
+      await trackAiUsage({
+        userId,
+        route: "/api/flyers/upload",
+        operation: "flyer_ocr_pdf",
+        model: "gpt-4o-mini",
+        usage: (pdfRes as { usage?: Record<string, unknown> }).usage as {
+          input_tokens?: number;
+          output_tokens?: number;
+          total_tokens?: number;
+        },
+        metadata: { filename },
       });
       const rawText =
         (typeof (pdfRes as { output_text?: unknown }).output_text === "string"
@@ -136,6 +165,14 @@ async function extractFlyerData(buffer: Buffer, filename: string): Promise<OcrFl
       },
     ],
     max_tokens: 1800,
+  });
+  await trackAiUsage({
+    userId,
+    route: "/api/flyers/upload",
+    operation: "flyer_ocr_image",
+    model: "gpt-4o-mini",
+    usage: res.usage,
+    metadata: { filename },
   });
 
   const raw = res.choices[0]?.message?.content ?? "{\"items\":[]}";
@@ -234,13 +271,18 @@ export async function POST(req: NextRequest) {
         isPdf ? "application/pdf" : file.type || "image/jpeg"
       );
     } catch {
-      // Keep processing even when object/file storage is unavailable in the runtime.
-      // Flyer rows still provide pricing context for estimates/deep dives.
+      // If primary storage fails, still persist locally so preview works in this environment.
+      try {
+        imageUrl = await saveFlyerFileLocally(buffer, file.name, userId);
+      } catch {
+        // Keep processing even when all file storage is unavailable.
+        // Flyer rows still provide pricing context for estimates/deep dives.
+      }
     }
 
     let extracted: OcrFlyerPayload = { items: [] };
     try {
-      extracted = await extractFlyerData(buffer, file.name);
+      extracted = await extractFlyerData(buffer, file.name, userId);
     } catch {
       extracted = { items: [] };
     }

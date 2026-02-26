@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { trackAiUsage } from "@/lib/aiUsage";
 
 async function getOpenAI() {
   const key = process.env.OPENAI_API_KEY;
@@ -277,6 +278,14 @@ export async function POST(req: NextRequest) {
         ],
         max_tokens: 1400,
       });
+      await trackAiUsage({
+        userId,
+        projectId,
+        route: "/api/ai/scope-gallery",
+        operation: "gallery_ideas",
+        model: "gpt-4o-mini",
+        usage: r.usage,
+      });
       const text = r.choices[0]?.message?.content ?? "[]";
       const parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, "").trim()) as unknown;
       if (Array.isArray(parsed)) {
@@ -358,6 +367,14 @@ export async function POST(req: NextRequest) {
           },
         ],
         max_tokens: 320,
+      });
+      await trackAiUsage({
+        userId,
+        projectId,
+        route: "/api/ai/scope-gallery",
+        operation: "gallery_detail_questions",
+        model: "gpt-4o-mini",
+        usage: r.usage,
       });
       const text = r.choices[0]?.message?.content ?? "[]";
       const parsed = JSON.parse(text.replace(/```json\n?|\n?```/g, "").trim()) as unknown;
@@ -461,6 +478,14 @@ export async function POST(req: NextRequest) {
             },
           ],
           max_tokens: 220,
+        });
+        await trackAiUsage({
+          userId,
+          projectId,
+          route: "/api/ai/scope-gallery",
+          operation: "gallery_apply_idea",
+          model: "gpt-4o-mini",
+          usage: r.usage,
         });
         const text = r.choices[0]?.message?.content ?? "{}";
         const obj = JSON.parse(text.replace(/```json\n?|\n?```/g, "").trim()) as Record<string, unknown>;

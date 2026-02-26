@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { trackAiUsage } from "@/lib/aiUsage";
 
 async function getOpenAI() {
   const key = process.env.OPENAI_API_KEY;
@@ -158,6 +159,14 @@ export async function POST(req: NextRequest) {
       ],
       max_tokens: 500,
     });
+    await trackAiUsage({
+      userId,
+      projectId,
+      route: "/api/ai/generate-scope",
+      operation: "refinement_questions",
+      model: "gpt-4o-mini",
+      usage: qRes.usage,
+    });
     const qText = qRes.choices[0]?.message?.content ?? "[]";
     let questions: Array<{ id: string; question: string; placeholder?: string }> = [];
     try {
@@ -265,6 +274,14 @@ export async function POST(req: NextRequest) {
       { role: "user", content: userMessage },
     ],
     max_tokens: 2000,
+  });
+  await trackAiUsage({
+    userId,
+    projectId,
+    route: "/api/ai/generate-scope",
+    operation: "generate_scope",
+    model: "gpt-4o-mini",
+    usage: res.usage,
   });
 
   const text = res.choices[0]?.message?.content ?? "[]";

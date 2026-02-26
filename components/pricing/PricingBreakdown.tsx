@@ -1092,6 +1092,11 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
     await runEstimateGeneration({ customOverrides });
   }
 
+  async function regenerateAllItems() {
+    setRegenDialogOpen(false);
+    await runEstimateGeneration({ customOverrides: {} });
+  }
+
   const activeQuestion = wizardQuestions[wizardIndex];
   const activeAnswer = activeQuestion ? (wizardAnswers[activeQuestion.id] ?? "") : "";
   const totalWizard = wizardQuestions.length;
@@ -1563,7 +1568,16 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
               className="gap-2"
             >
               <Sparkles className="size-4" />
-              {generating || loadingWizard ? "Generating..." : "Review rates + generate"}
+              {generating || loadingWizard ? "Regenerating..." : "Review rates + regenerate"}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                void regenerateAllItems();
+              }}
+              disabled={generating || loadingWizard}
+            >
+              {generating || loadingWizard ? "Regenerating..." : "Regenerate estimate"}
             </Button>
             <Button variant="outline" onClick={() => { void fetchEstimateWizard(); }} disabled={loadingWizard || generating}>
               {loadingWizard ? "Loading..." : "Quick questionnaire"}
@@ -1621,13 +1635,24 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
               size="sm"
               variant="outline"
               onClick={() => {
-                openRegenerateDialog();
+                void regenerateAllItems();
               }}
               disabled={generating || loadingWizard}
               className="gap-1.5"
             >
               <RefreshCw className={`size-3.5 ${generating ? "animate-spin" : ""}`} />
-              {generating || loadingWizard ? "Updating..." : "Regenerate selected"}
+              {generating || loadingWizard ? "Updating..." : "Regenerate estimate"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                openRegenerateDialog();
+              }}
+              disabled={generating || loadingWizard}
+              className="gap-1.5"
+            >
+              Choose lines
             </Button>
             <Button size="sm" variant="outline" onClick={() => runReprice()} disabled={generating || loadingWizard} className="gap-1.5">
               <Package className="size-3.5" />
@@ -1872,7 +1897,7 @@ export function PricingBreakdown({ projectId, province, estimate, showValueTrack
         <Dialog open={regenDialogOpen} onOpenChange={setRegenDialogOpen}>
           <DialogContent className="sm:max-w-xl">
             <DialogHeader>
-              <DialogTitle>Regenerate selected line items</DialogTitle>
+              <DialogTitle>Choose line items to regenerate</DialogTitle>
               <DialogDescription>
                 Check the lines you want AI to recalculate. Unchecked lines stay locked to your current manual values.
               </DialogDescription>

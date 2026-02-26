@@ -24,6 +24,7 @@ model User {
   pricing       UserPricing[]
   properties    UserProperty[]
   flipSearches  FlipSearch[]
+  aiUsageEvents AiUsageEvent[]
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 }
@@ -85,11 +86,35 @@ model Project {
   scopes      Scope[]
   estimates   Estimate[]
   flipSearches FlipSearch[]
+  aiUsageEvents AiUsageEvent[]
 
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AiUsageEvent {
+  id            String   @id @default(cuid())
+  userId        String
+  projectId     String?
+  route         String
+  operation     String
+  model         String
+  inputTokens   Int
+  outputTokens  Int
+  totalTokens   Int
+  rawCostUsd    Float
+  billedCostUsd Float
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([route, createdAt])
+  @@index([projectId, createdAt])
 }
 
 model FlipSearch {

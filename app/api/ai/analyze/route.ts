@@ -7,6 +7,7 @@ import {
   buildPhotoTagContext,
   buildScopeContext,
 } from "@/lib/ai/prompts/scopePrompt";
+import { trackAiUsage } from "@/lib/aiUsage";
 import path from "path";
 import { readFile } from "fs/promises";
 
@@ -26,7 +27,9 @@ function getImagePath(url: string): string | null {
 
 async function tagPhoto(
   imagePath: string,
-  context: string
+  context: string,
+  userId: string,
+  projectId: string
 ): Promise<{
   room: string;
   surfaceType: string;
@@ -62,6 +65,14 @@ async function tagPhoto(
       },
     ],
     max_tokens: 500,
+  });
+  await trackAiUsage({
+    userId,
+    projectId,
+    route: "/api/ai/analyze",
+    operation: "tag_photo",
+    model: "gpt-4o-mini",
+    usage: res.usage,
   });
 
   const text = res.choices[0]?.message?.content ?? "{}";
@@ -126,7 +137,7 @@ export async function POST(req: NextRequest) {
         const imagePath = getImagePath(photo.url);
         if (!imagePath) return;
         try {
-          const tags = await tagPhoto(imagePath, context);
+          const tags = await tagPhoto(imagePath, context, userId, projectId);
           await prisma.photo.update({
             where: { id: photo.id },
             data: {
@@ -178,6 +189,14 @@ Return only valid JSON array.`;
       { role: "user", content: synthesisPrompt },
     ],
     max_tokens: 1500,
+  });
+  await trackAiUsage({
+    userId,
+    projectId,
+    route: "/api/ai/analyze",
+    operation: "synthesize_scope",
+    model: "gpt-4o-mini",
+    usage: res.usage,
   });
 
   const text = res.choices[0]?.message?.content ?? "[]";
