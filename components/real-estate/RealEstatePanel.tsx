@@ -169,6 +169,29 @@ export function RealEstatePanel({
     }
   }, [projectId]);
 
+  useEffect(() => {
+    let cancelled = false;
+    async function loadSavedComparables() {
+      try {
+        const res = await fetch(`/api/flip-searches?projectId=${projectId}`);
+        if (!res.ok) return;
+        const rows = (await res.json()) as Array<{ comparablesFound?: string | null }>;
+        const first = rows.find((r) => typeof r.comparablesFound === "string" && r.comparablesFound.trim());
+        if (!first?.comparablesFound) return;
+        const parsed = JSON.parse(first.comparablesFound) as ComparablesResult;
+        if (!cancelled && parsed && !result) {
+          setResult(parsed);
+        }
+      } catch {
+        // noop
+      }
+    }
+    void loadSavedComparables();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, result]);
+
   async function addUserComp() {
     const prop = await addProperty();
     if (prop) {

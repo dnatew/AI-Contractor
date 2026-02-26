@@ -26,6 +26,9 @@ Output style:
 Coverage:
 - include all selected work types somewhere in the final scope
 - if description implies additional critical work, include it
+- treat selected work-type/room bubbles as coverage constraints, not mandatory item titles
+- do not copy bubble labels verbatim as repetitive scope titles unless it is naturally the best wording
+- prefer practical package names that help estimating (area + work outcome), while still covering selected bubbles
 
 Adaptive item count:
 - simple projects: 7-8 items
@@ -190,13 +193,14 @@ export async function POST(req: NextRequest) {
   if (project.propertyType) contextParts.push(`Property type: ${project.propertyType}`);
   if (project.neighborhoodTier) contextParts.push(`Neighborhood tier: ${project.neighborhoodTier.replace(/_/g, " ")}`);
 
-  contextParts.push("\n=== CONTRACTOR SELECTIONS (use these to build the scope) ===");
+  contextParts.push("\n=== CONTRACTOR SELECTIONS (coverage constraints, not forced titles) ===");
   if (workTypeLabels.length > 0) {
     contextParts.push(`Work types selected (${workTypeLabels.length}):`);
     for (const label of workTypeLabels) {
       contextParts.push(`  • ${label}`);
     }
     contextParts.push(`Coverage target: include all selected work types somewhere in the final scope.`);
+    contextParts.push(`Naming rule: you do NOT need to use these labels as item titles; use clearer estimating titles when better.`);
   }
   if (roomList.length > 0) {
     contextParts.push(`Rooms selected (${roomList.length}):`);
@@ -204,6 +208,7 @@ export async function POST(req: NextRequest) {
       contextParts.push(`  • ${room}`);
     }
     contextParts.push(`Use room/area segments that are clear to estimate from.`);
+    contextParts.push(`Do not force room bubble names as repetitive titles; use them to ensure coverage.`);
   }
   contextParts.push(`Material grade: ${grade}`);
   contextParts.push(`Target scope size: ${targetRange} items (adaptive by complexity).`);

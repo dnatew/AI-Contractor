@@ -49,7 +49,7 @@ Turn job photos into professional estimates for Canadian contractors. Plan → E
 - [ ] Set `NEXTAUTH_SECRET` (e.g. `openssl rand -base64 32`)
 - [ ] Set `NEXTAUTH_URL` to your production URL
 - [ ] Set `OPENAI_API_KEY`
-- [ ] Optional: Set `TAVILY_API_KEY` for real comparables web search (app.tavily.com)
+- [ ] Optional: ensure `OPENAI_API_KEY` is set to enable web-search-backed estimate and comparable analysis
 - [ ] Optional: Configure S3/R2 for photo storage (omit to use local `public/uploads`)
 - [ ] Run `npx prisma migrate deploy`
 

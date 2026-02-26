@@ -11,26 +11,36 @@ async function getOpenAI() {
 }
 
 async function searchWeb(query: string): Promise<string> {
-  const key = process.env.TAVILY_API_KEY;
-  if (!key) return "";
-
-  const res = await fetch("https://api.tavily.com/search", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      api_key: key,
-      query,
-      max_results: 5,
-      search_depth: "basic",
-    }),
-  });
-  if (!res.ok) return "";
-
-  const data = (await res.json()) as { results?: Array<{ title: string; content: string; url: string }> };
-  const results = data.results ?? [];
-  return results
-    .map((r) => `[${r.title}] ${r.content} (${r.url})`)
-    .join("\n\n");
+  try {
+    const openai = await getOpenAI();
+    const res = await openai.chat.completions.create({
+      model: "gpt-4o-mini-search-preview",
+      messages: [
+        {
+          role: "system",
+          content:
+            "Search the web and return ONLY valid JSON array with up to 5 items: [{\"title\":string,\"content\":string,\"url\":string}].",
+        },
+        { role: "user", content: query },
+      ],
+      max_tokens: 500,
+    });
+    const raw = res.choices[0]?.message?.content ?? "[]";
+    const parsed = JSON.parse(raw.replace(/```json\n?|\n?```/g, "").trim()) as unknown;
+    const results = Array.isArray(parsed)
+      ? (parsed as Array<Record<string, unknown>>)
+          .map((r) => ({
+            title: String(r.title ?? "").trim(),
+            content: String(r.content ?? "").trim(),
+            url: String(r.url ?? "").trim(),
+          }))
+          .filter((r) => r.title && /^https?:\/\//.test(r.url))
+          .slice(0, 5)
+      : [];
+    return results.map((r) => `[${r.title}] ${r.content} (${r.url})`).join("\n\n");
+  } catch {
+    return "";
+  }
 }
 
 const LOCAL_RADIUS_KM = 50;
@@ -295,7 +305,7 @@ Always treat the full project address (street + city + province) as the location
 Focus on percentage-based value add — it's universal across markets.`;
 
   const openai = await getOpenAI();
-  // Prefer OpenAI's search model (built-in web search). Fallback to standard + Tavily.
+  // Prefer OpenAI's search model (built-in web search). Fallback to standard model.
   const searchModel = "gpt-4o-mini-search-preview";
   const fallbackModel = "gpt-4o-mini";
 
@@ -429,9 +439,34 @@ Focus on percentage-based value add — it's universal across markets.`;
     parsed.comparables = mergedComparables;
   }
 
-  return NextResponse.json({
+  const payloadToReturn = {
     ...parsed,
     usedWebSearch: usedSearchModel || hasSearch,
     mapPins,
-  });
+  };
+
+  // Persist latest comparable analysis on the project so it can be reloaded later.
+  try {
+    await prisma.flipSearch.create({
+      data: {
+        userId,
+        projectId: project.id,
+        title: "Comparable analysis snapshot",
+        purchasePrice: currentPurchasePrice ?? 0,
+        renoCost: quotedCost ?? 0,
+        aiReasoning: parsed.comparablesSummary ?? null,
+        comparablesFound: JSON.stringify(payloadToReturn),
+        marketType:
+          typeof parsed.caveats === "string" && parsed.caveats.toLowerCase().includes("rural")
+            ? "rural"
+            : typeof parsed.caveats === "string" && parsed.caveats.toLowerCase().includes("urban")
+              ? "urban"
+              : null,
+      },
+    });
+  } catch {
+    // Non-blocking: still return AI analysis even if persistence fails.
+  }
+
+  return NextResponse.json(payloadToReturn);
 }

@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { PhotoUploader } from "@/components/photo-uploader";
 import { ScopeEditor } from "@/components/scope/ScopeEditor";
+import { ScopeFinishesGallery } from "@/components/scope/ScopeFinishesGallery";
 import { Badge } from "@/components/ui/badge";
 import { PricingBreakdown } from "@/components/pricing/PricingBreakdown";
 import { InvoicePreview } from "@/components/invoice/InvoicePreview";
@@ -418,6 +419,12 @@ export function ProjectWorkspace({ project }: { project: ProjectWithRelations })
             {error && <p className="text-sm text-red-600">{error}</p>}
           </CardContent>
         </Card>
+
+        <ScopeFinishesGallery
+          projectId={project.id}
+          scopeItems={allItems}
+          onApplied={() => router.refresh()}
+        />
 
         {/* Photos with notes */}
         <Card className="border-slate-200 bg-white shadow-sm">
