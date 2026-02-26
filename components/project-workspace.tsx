@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { PhotoUploader } from "@/components/photo-uploader";
 import { ScopeEditor } from "@/components/scope/ScopeEditor";
 import { ScopeFinishesGallery } from "@/components/scope/ScopeFinishesGallery";
+import { FlyerLibraryCard } from "@/components/flyers/FlyerLibraryCard";
 import { Badge } from "@/components/ui/badge";
 import { PricingBreakdown } from "@/components/pricing/PricingBreakdown";
 import { InvoicePreview } from "@/components/invoice/InvoicePreview";
@@ -425,6 +426,8 @@ export function ProjectWorkspace({ project }: { project: ProjectWithRelations })
           scopeItems={allItems}
           onApplied={() => router.refresh()}
         />
+
+        <FlyerLibraryCard />
 
         {/* Photos with notes */}
         <Card className="border-slate-200 bg-white shadow-sm">

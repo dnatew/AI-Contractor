@@ -10,7 +10,8 @@ const USE_LOCAL = !process.env.S3_BUCKET;
 export async function uploadPhoto(
   buffer: Buffer,
   filename: string,
-  projectId: string
+  projectId: string,
+  contentType?: string
 ): Promise<string> {
   if (USE_LOCAL) {
     const uploadDir = path.join(process.cwd(), "public", "uploads", projectId);
@@ -38,7 +39,7 @@ export async function uploadPhoto(
       Bucket: BUCKET,
       Key: key,
       Body: buffer,
-      ContentType: "image/jpeg",
+      ContentType: contentType ?? "image/jpeg",
     })
   );
 

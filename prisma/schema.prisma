@@ -20,6 +20,7 @@ model User {
   accounts      Account[]
   sessions      Session[]
   projects      Project[]
+  flyers        Flyer[]
   pricing       UserPricing[]
   properties    UserProperty[]
   flipSearches  FlipSearch[]
@@ -251,4 +252,41 @@ model UserProperty {
   updatedAt DateTime @updatedAt
 
   @@index([userId])
+}
+
+model Flyer {
+  id            String      @id @default(cuid())
+  userId        String
+  imageUrl      String
+  storeName     String?
+  releaseDate   DateTime?
+  parsedSummary String?
+
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items         FlyerItem[]
+
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@index([userId, releaseDate])
+  @@index([userId, createdAt])
+}
+
+model FlyerItem {
+  id               String   @id @default(cuid())
+  flyerId          String
+  name             String
+  unitLabel        String?
+  price            Float
+  promoNotes       String?
+  rawText          String?
+  normalizedTokens Json?
+
+  flyer            Flyer    @relation(fields: [flyerId], references: [id], onDelete: Cascade)
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([flyerId])
+  @@index([name])
 }

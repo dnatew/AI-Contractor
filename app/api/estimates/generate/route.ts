@@ -7,6 +7,7 @@ import {
   getFallbackMaterialUnitCost,
   type PricePoint,
 } from "@/lib/pricing/fallbackPriceCatalog";
+import { matchFlyerItemsForLine } from "@/lib/flyers";
 
 async function getOpenAI() {
   const key = process.env.OPENAI_API_KEY;
@@ -532,6 +533,11 @@ function percentile75(values: number[]): number | null {
   return sorted[idx];
 }
 
+function average(values: number[]): number | null {
+  if (!values.length) return null;
+  return values.reduce((s, n) => s + n, 0) / values.length;
+}
+
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
@@ -838,7 +844,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Scope-first estimate: use current scope as primary, then check description for critical gaps.
-  let estimateScopeItems = [...allScopeItems];
+  const estimateScopeItems = [...allScopeItems];
   let supplementalItemCount = 0;
   if (project.jobPrompt && mode !== "item_questions") {
     try {
@@ -909,6 +915,28 @@ export async function POST(req: NextRequest) {
       }
     } catch {
       // no-op: keep original scope only
+    }
+  }
+
+  const flyerItems = await prisma.flyerItem.findMany({
+    where: { flyer: { userId } },
+    include: { flyer: true },
+    orderBy: [{ flyer: { releaseDate: "desc" } }, { createdAt: "desc" }],
+    take: 400,
+  });
+  const flyerMatchesByScopeForEstimate = new Map<
+    string,
+    ReturnType<typeof matchFlyerItemsForLine>
+  >();
+  for (const s of estimateScopeItems) {
+    const matches = matchFlyerItemsForLine(flyerItems, {
+      task: s.task,
+      material: s.material,
+      materialName: s.material,
+      unit: s.unit,
+    });
+    if (matches.length > 0) {
+      flyerMatchesByScopeForEstimate.set(s.id, matches);
     }
   }
 
@@ -1009,6 +1037,13 @@ export async function POST(req: NextRequest) {
       quantity: i.quantity,
       unit: i.unit,
       laborHoursHint: i.laborHours ?? 0,
+      flyerHints: (flyerMatchesByScopeForEstimate.get(i.id) ?? []).slice(0, 3).map((m) => ({
+        name: m.name,
+        unitLabel: m.unitLabel,
+        price: m.price,
+        promoNotes: m.promoNotes,
+        storeName: m.flyer?.storeName ?? null,
+      })),
     })),
   };
   const includeDebugSnapshot =
@@ -1055,6 +1090,7 @@ Rules:
 - Keep quantity/unit aligned with the line intent.
 - For labor/material, use user pricing benchmarks first; if missing, infer best judgment from similar categories and project context.
 - For sqft lines, anchor labor to category sqft benchmarks when possible.
+- When flyerHints exist on a line, treat them as strong local pricing evidence for material selections and unit costs.
 - Avoid token placeholder values and unrealistic micro-costs.
 - Always provide realistic laborRate (hourly) and materialUnitCost (>0) for every line.
 - For non-sqft lines, laborHours × laborRate should produce a practical labor total for the scope line.
@@ -1105,6 +1141,13 @@ Rules:
         unit: s.unit,
         laborHoursHint: s.laborHours ?? 0,
         laborRateHint: l?.laborRate,
+        flyerHints: (flyerMatchesByScopeForEstimate.get(s.id) ?? []).slice(0, 3).map((m) => ({
+          name: m.name,
+          unitLabel: m.unitLabel,
+          price: m.price,
+          promoNotes: m.promoNotes,
+          storeName: m.flyer?.storeName ?? null,
+        })),
       };
     })
     .filter((x): x is NonNullable<typeof x> => !!x)
@@ -1134,6 +1177,7 @@ ${JSON.stringify({
 Rules:
 - Fill realistic laborHours/laborRate/materialUnitCost for each weak line.
 - Prioritize user pricing benchmarks where applicable.
+- Use flyerHints as local context when relevant to the weak line material/task.
 - If uncertain, infer practical mid-range values for MB/Canada.
 - materialUnitCost must be > 0; laborHours must be >= 0; laborRate must be >= 30 for skilled trades.`,
           },
@@ -1469,6 +1513,33 @@ Rules:
         .map(([k, v]) => `- ${k}: ${v}`)
         .join("\n");
 
+      const flyerMatchesByScopeItem = new Map<string, ReturnType<typeof matchFlyerItemsForLine>>();
+      for (const line of targetLines) {
+        const matches = matchFlyerItemsForLine(flyerItems, {
+          task: line.task,
+          material: line.material,
+          materialName: line.materialName,
+          unit: line.unit,
+        });
+        if (matches.length > 0) {
+          flyerMatchesByScopeItem.set(line.scopeItemId, matches);
+        }
+      }
+      const flyerContext = targetLines
+        .map((line) => {
+          const matches = flyerMatchesByScopeItem.get(line.scopeItemId) ?? [];
+          if (matches.length === 0) return "";
+          return [
+            `Line ${line.scopeItemId} (${line.task}) local flyer evidence:`,
+            ...matches.map(
+              (m) =>
+                `- ${m.name} @ ${m.price.toFixed(2)} CAD${m.unitLabel ? ` / ${m.unitLabel}` : ""} (${m.flyer?.storeName ?? "store unknown"}${m.flyer?.releaseDate ? `, release ${m.flyer.releaseDate.toISOString().slice(0, 10)}` : ""})`
+            ),
+          ].join("\n");
+        })
+        .filter(Boolean)
+        .join("\n\n");
+
       const searchSeeds = targetLines
         .slice(0, 8)
         .map((l) => `${l.task} ${l.materialName || l.material} ${l.unit}`)
@@ -1495,12 +1566,14 @@ Rules:
         "3) Decide final material unit cost with concise rationale and references.",
         "Output concise, practical, explainable numbers.",
         "If item clarifications include a preferred/budget max material cost per unit (e.g., per sqft), treat it as a hard cap unless it is clearly infeasible, and explicitly explain any exception in notes.",
+        "Use matched local flyer prices as a preferred signal before broad web sources when they are relevant to the line item.",
         "PRIORITY SOURCES: Home Depot Canada (homedepot.ca) and RONA Canada (rona.ca). Use those first. If evidence is sparse, infer conservatively from similar items in those sources.",
         `Project: ${project.address}, ${project.province}, ${project.sqft} sqft`,
         `Scope lines:\n${targetLines
           .map((l) => `- id=${l.scopeItemId} | ${l.segment}: ${l.task} | ${l.quantity} ${l.unit} | material=${l.materialName ?? l.material}`)
           .join("\n")}`,
         itemAnswersText ? `Item clarifications:\n${itemAnswersText}` : "Item clarifications: none",
+        flyerContext ? `Matched local flyer evidence:\n${flyerContext}` : "Matched local flyer evidence: none",
         `Supplier search evidence:\n${supplierSearchContext || "No supplier search evidence available; still provide conservative estimates."}`,
         "Return ONLY valid JSON in this format (example):\n[\n  {\n    \"scopeItemId\": \"string\",\n    \"materialUnitCost\": number, // suggested total material cost per unit used in the estimate\n    \"materialList\": [\n      { \"name\": \"string\", \"quantity\": number, \"unit\": \"string\", \"unitCost\": number, \"sourceUrl\": \"string\" }\n    ],\n    \"examples\": [ { \"label\": \"string\", \"price\": number, \"sourceUrl\": \"string\" } ],\n    \"imageUrl\": \"string\", // optional product image URL if available\n    \"notes\": \"string\"\n  }\n]\n- Prefer ranges and be conservative. Weight local (project province) sources higher. Provide human-readable notes explaining assumptions.",
         "Prefer ranges and be conservative. Weight local (project province) sources higher. Provide human-readable notes explaining assumptions.",
@@ -1580,7 +1653,20 @@ Rules:
       for (const l of adjustedLines) {
         if (mode === "item_reprice" && requestedScopeItemId && l.scopeItemId !== requestedScopeItemId) continue;
         const m = materialMap.get(l.scopeItemId);
+        const flyerMatches = flyerMatchesByScopeItem.get(l.scopeItemId) ?? [];
+        const flyerPrices = flyerMatches
+          .map((x) => Number(x.price))
+          .filter((x) => Number.isFinite(x) && x > 0 && x < 100000);
+        const flyerAvg = average(flyerPrices);
+        const flyerP75 = percentile75(flyerPrices);
         if (m && typeof m.materialUnitCost === "number" && m.materialUnitCost > 0) {
+          let aiMaterialUnit = m.materialUnitCost;
+          if (flyerAvg && Number.isFinite(flyerAvg)) {
+            // Blend LLM + local flyer evidence so flyer library materially influences deep-dive output.
+            aiMaterialUnit = aiMaterialUnit * 0.7 + flyerAvg * 0.3;
+          } else if (!Number.isFinite(aiMaterialUnit) || aiMaterialUnit <= 0) {
+            aiMaterialUnit = flyerAvg ?? aiMaterialUnit;
+          }
           const currentUnit = l.materialUnitCost > 0 ? l.materialUnitCost : 1;
           const unitLower = (l.unit ?? "").toLowerCase();
           const maxMultiplier = unitLower.includes("sqft") || unitLower.includes("sq ft")
@@ -1591,7 +1677,10 @@ Rules:
           const minMultiplier = 0.35;
           const minAllowed = currentUnit * minMultiplier;
           const maxAllowed = currentUnit * maxMultiplier;
-          l.materialUnitCost = clamp(m.materialUnitCost, minAllowed, maxAllowed);
+          l.materialUnitCost = clamp(aiMaterialUnit, minAllowed, maxAllowed);
+          if (flyerP75 && Number.isFinite(flyerP75) && flyerP75 > 0) {
+            l.materialUnitCost = Math.min(l.materialUnitCost, flyerP75 * 1.2);
+          }
           if (preferredMaterialUnitCap && Number.isFinite(preferredMaterialUnitCap) && preferredMaterialUnitCap > 0) {
             // Respect deep-dive user budget/preference for material unit pricing when provided.
             l.materialUnitCost = Math.min(l.materialUnitCost, preferredMaterialUnitCap);
@@ -1624,8 +1713,13 @@ Rules:
               url: it.sourceUrl ?? "",
               price: it.unitCost,
             })),
+            ...flyerMatches.map((f) => ({
+              label: `Flyer: ${f.name} (${f.flyer?.storeName ?? "local store"})`,
+              url: f.flyer?.imageUrl ?? "",
+              price: f.price,
+            })),
           ])
-            .filter((x) => x.url && /^https?:\/\//.test(x.url))
+            .filter((x) => x.url && (/^https?:\/\//.test(x.url) || x.url.startsWith("/")))
             .slice(0, 3);
 
           repriceReferences.push({
@@ -1635,10 +1729,48 @@ Rules:
             notes: m.notes,
             links,
           });
+          const flyerNote =
+            flyerMatches.length > 0
+              ? ` Includes ${flyerMatches.length} local flyer match(es).`
+              : "";
           itemInsights[l.scopeItemId] = {
-            summary: m.notes || "AI deep-dive supplier reprice.",
+            summary: (m.notes || "AI deep-dive supplier reprice.") + flyerNote,
             links,
             imageUrl: m.imageUrl,
+            updatedAt: new Date().toISOString(),
+          };
+        } else if (flyerMatches.length > 0 && flyerAvg && flyerAvg > 0) {
+          const unitLower = (l.unit ?? "").toLowerCase();
+          const currentUnit = l.materialUnitCost > 0 ? l.materialUnitCost : flyerAvg;
+          const maxMultiplier = unitLower.includes("sqft") || unitLower.includes("sq ft") ? 2.2 : 3.0;
+          l.materialUnitCost = clamp(flyerAvg, currentUnit * 0.35, currentUnit * maxMultiplier);
+          if (preferredMaterialUnitCap && preferredMaterialUnitCap > 0) {
+            l.materialUnitCost = Math.min(l.materialUnitCost, preferredMaterialUnitCap);
+          }
+          l.materialCost = (l.quantity ?? 0) * l.materialUnitCost;
+          l.subtotal = (l.laborCost ?? 0) + l.materialCost;
+          l.markup = l.subtotal * MARKUP_PERCENT;
+          l.tax = (l.subtotal + l.markup) * (baselineResult.assumptions.taxRate ?? 0);
+          l.total = l.subtotal + l.markup + l.tax;
+          const links = dedupeReferenceLinks(
+            flyerMatches.map((f) => ({
+              label: `Flyer: ${f.name} (${f.flyer?.storeName ?? "local store"})`,
+              url: f.flyer?.imageUrl ?? "",
+              price: f.price,
+            }))
+          )
+            .filter((x) => x.url && (/^https?:\/\//.test(x.url) || x.url.startsWith("/")))
+            .slice(0, 3);
+          repriceReferences.push({
+            scopeItemId: l.scopeItemId,
+            task: l.task,
+            materialUnitCost: l.materialUnitCost,
+            notes: "Repriced from local flyer library matches.",
+            links,
+          });
+          itemInsights[l.scopeItemId] = {
+            summary: `Repriced from local flyer library (${flyerMatches.length} match${flyerMatches.length > 1 ? "es" : ""}).`,
+            links,
             updatedAt: new Date().toISOString(),
           };
         }
@@ -1724,6 +1856,10 @@ Rules:
           laborBenchmarkHits: laborBench.searchHits,
           supplierQueries: searchSupplierQueries,
           supplierHits: searchSupplierHits,
+        },
+        flyerEvidence: {
+          flyerItemsAvailable: flyerItems.length,
+          linesMatched: flyerMatchesByScopeForEstimate.size,
         },
         fallbackPricing: {
           pricePoint,
