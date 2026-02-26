@@ -25,6 +25,8 @@ type Flyer = {
   items: FlyerItem[];
 };
 
+const MAX_CLIENT_UPLOAD_BYTES = 4 * 1024 * 1024;
+
 function isPdfUrl(url: string): boolean {
   return /\.pdf(?:$|\?)/i.test(url);
 }
@@ -41,6 +43,8 @@ export function FlyerLibraryCard() {
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<string | null>(null);
 
   const flyerCount = flyers.length;
   const itemCount = useMemo(
@@ -72,17 +76,54 @@ export function FlyerLibraryCard() {
     void loadFlyers();
   }, []);
 
-  async function uploadFlyer(form: FormData) {
+  async function uploadFlyersInBatches(
+    files: File[],
+    metadata: { storeName?: string; releaseDate?: string }
+  ) {
+    setUploadError(null);
     setUploading(true);
+    setUploadProgress(null);
     try {
-      const res = await fetch("/api/flyers/upload", {
-        method: "POST",
-        body: form,
-      });
-      if (!res.ok) return;
-      await loadFlyers();
+      const failedFiles: string[] = [];
+      const successfulFiles: string[] = [];
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        setUploadProgress(`Uploading ${i + 1} of ${files.length}: ${file.name}`);
+        const fd = new FormData();
+        fd.append("files", file);
+        if (metadata.storeName?.trim()) fd.append("storeName", metadata.storeName.trim());
+        if (metadata.releaseDate?.trim()) fd.append("releaseDate", metadata.releaseDate.trim());
+
+        const res = await fetch("/api/flyers/upload", {
+          method: "POST",
+          body: fd,
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          if (res.status === 413) {
+            setUploadError(
+              typeof data.error === "string"
+                ? `${file.name}: ${data.error}`
+                : `${file.name}: upload too large.`
+            );
+            return;
+          }
+          failedFiles.push(file.name);
+          continue;
+        }
+        successfulFiles.push(file.name);
+      }
+
+      if (successfulFiles.length > 0) {
+        await loadFlyers();
+      }
+      if (failedFiles.length > 0) {
+        setUploadError(`Some files failed: ${failedFiles.join(", ")}.`);
+      }
     } finally {
       setUploading(false);
+      setUploadProgress(null);
     }
   }
 
@@ -149,16 +190,25 @@ export function FlyerLibraryCard() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            setUploadError(null);
             const form = e.currentTarget;
             const fileInput = form.querySelector('input[type="file"]') as HTMLInputElement | null;
             if (!fileInput?.files?.length) return;
-            const fd = new FormData();
-            for (const file of Array.from(fileInput.files)) fd.append("files", file);
+            const allFiles = Array.from(fileInput.files);
+            const oversize = allFiles.filter((f) => f.size > MAX_CLIENT_UPLOAD_BYTES);
+            if (oversize.length > 0) {
+              setUploadError(
+                `These files are over 4MB: ${oversize.map((f) => f.name).join(", ")}. ` +
+                  "Please upload smaller PDFs/images."
+              );
+              return;
+            }
             const storeName = (form.querySelector('input[name="storeName"]') as HTMLInputElement | null)?.value;
             const releaseDate = (form.querySelector('input[name="releaseDate"]') as HTMLInputElement | null)?.value;
-            if (storeName?.trim()) fd.append("storeName", storeName.trim());
-            if (releaseDate?.trim()) fd.append("releaseDate", releaseDate.trim());
-            void uploadFlyer(fd);
+            void uploadFlyersInBatches(allFiles, {
+              storeName: storeName?.trim() || undefined,
+              releaseDate: releaseDate?.trim() || undefined,
+            });
             fileInput.value = "";
           }}
           className="grid gap-2 md:grid-cols-4"
@@ -170,7 +220,22 @@ export function FlyerLibraryCard() {
             <Upload className="size-4" />
             {uploading ? "Uploading + parsing..." : "Upload flyer photos or PDF"}
           </Button>
+          <p className="md:col-span-4 text-[11px] text-slate-500">
+            Simple flow: upload flyer, review extracted table rows, edit/confirm values, then use as estimate context.
+            Max 4MB per file.
+          </p>
         </form>
+
+        {uploadError && (
+          <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+            {uploadError}
+          </div>
+        )}
+        {uploadProgress && (
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            {uploadProgress}
+          </div>
+        )}
 
         {loading && flyers.length === 0 && (
           <p className="text-sm text-slate-500">Loading flyer library...</p>
@@ -267,70 +332,79 @@ export function FlyerLibraryCard() {
                         No rows extracted. You can still keep this flyer for reference.
                       </p>
                     ) : (
-                      flyer.items.map((item) => (
-                        <div
-                          key={item.id}
-                          className="rounded border border-slate-200 bg-white p-2 grid gap-2 md:grid-cols-12"
-                        >
-                          <div className="md:col-span-4">
-                            <Input
-                              defaultValue={item.name}
-                              onBlur={(e) => {
-                                const next = e.target.value.trim();
-                                if (next && next !== item.name) {
-                                  void patchItem(item.id, { name: next });
-                                }
-                              }}
-                            />
-                          </div>
-                          <div className="md:col-span-2">
-                            <Input
-                              defaultValue={item.unitLabel ?? ""}
-                              placeholder="Unit"
-                              onBlur={(e) => {
-                                const next = e.target.value.trim();
-                                if (next !== (item.unitLabel ?? "")) {
-                                  void patchItem(item.id, { unitLabel: next || null });
-                                }
-                              }}
-                            />
-                          </div>
-                          <div className="md:col-span-2">
-                            <Input
-                              type="number"
-                              defaultValue={Number(item.price)}
-                              onBlur={(e) => {
-                                const next = Number(e.target.value);
-                                if (Number.isFinite(next) && next > 0 && next !== item.price) {
-                                  void patchItem(item.id, { price: next });
-                                }
-                              }}
-                            />
-                          </div>
-                          <div className="md:col-span-3">
-                            <Input
-                              defaultValue={item.promoNotes ?? ""}
-                              placeholder="Notes"
-                              onBlur={(e) => {
-                                const next = e.target.value.trim();
-                                if (next !== (item.promoNotes ?? "")) {
-                                  void patchItem(item.id, { promoNotes: next || null });
-                                }
-                              }}
-                            />
-                          </div>
-                          <div className="md:col-span-1 flex items-center justify-end">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="text-rose-600 hover:text-rose-700 hover:bg-rose-50"
-                              onClick={() => void deleteFlyerItem(item.id)}
-                            >
-                              <Trash2 className="size-3.5" />
-                            </Button>
-                          </div>
+                      <div className="space-y-2">
+                        <div className="grid gap-2 md:grid-cols-12 px-2 text-[11px] uppercase tracking-wide text-slate-500">
+                          <div className="md:col-span-4">Item</div>
+                          <div className="md:col-span-2">Unit</div>
+                          <div className="md:col-span-2">Price (CAD)</div>
+                          <div className="md:col-span-3">Use / notes</div>
+                          <div className="md:col-span-1 text-right">Remove</div>
                         </div>
-                      ))
+                        {flyer.items.map((item) => (
+                          <div
+                            key={item.id}
+                            className="rounded border border-slate-200 bg-white p-2 grid gap-2 md:grid-cols-12"
+                          >
+                            <div className="md:col-span-4">
+                              <Input
+                                defaultValue={item.name}
+                                onBlur={(e) => {
+                                  const next = e.target.value.trim();
+                                  if (next && next !== item.name) {
+                                    void patchItem(item.id, { name: next });
+                                  }
+                                }}
+                              />
+                            </div>
+                            <div className="md:col-span-2">
+                              <Input
+                                defaultValue={item.unitLabel ?? ""}
+                                placeholder="Unit"
+                                onBlur={(e) => {
+                                  const next = e.target.value.trim();
+                                  if (next !== (item.unitLabel ?? "")) {
+                                    void patchItem(item.id, { unitLabel: next || null });
+                                  }
+                                }}
+                              />
+                            </div>
+                            <div className="md:col-span-2">
+                              <Input
+                                type="number"
+                                defaultValue={Number(item.price)}
+                                onBlur={(e) => {
+                                  const next = Number(e.target.value);
+                                  if (Number.isFinite(next) && next > 0 && next !== item.price) {
+                                    void patchItem(item.id, { price: next });
+                                  }
+                                }}
+                              />
+                            </div>
+                            <div className="md:col-span-3">
+                              <Input
+                                defaultValue={item.promoNotes ?? ""}
+                                placeholder="Notes"
+                                onBlur={(e) => {
+                                  const next = e.target.value.trim();
+                                  if (next !== (item.promoNotes ?? "")) {
+                                    void patchItem(item.id, { promoNotes: next || null });
+                                  }
+                                }}
+                              />
+                            </div>
+                            <div className="md:col-span-1 flex items-center justify-end">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-rose-600 hover:text-rose-700 hover:bg-rose-50"
+                                onClick={() => void deleteFlyerItem(item.id)}
+                              >
+                                <Trash2 className="size-3.5" />
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </div>
                 )}

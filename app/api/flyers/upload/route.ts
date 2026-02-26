@@ -4,6 +4,9 @@ import { prisma } from "@/lib/db";
 import { uploadPhoto } from "@/lib/storage";
 import { normalizeTokens } from "@/lib/flyers";
 
+const MAX_FLYER_FILE_BYTES = 4 * 1024 * 1024; // keep under common serverless payload limits
+const MAX_FLYER_FILES_PER_REQUEST = 6;
+
 type OcrFlyerItem = {
   name: string;
   unitLabel?: string;
@@ -180,6 +183,22 @@ export async function POST(req: NextRequest) {
   if (!files.length) {
     return NextResponse.json({ error: "No files uploaded" }, { status: 400 });
   }
+  if (files.length > MAX_FLYER_FILES_PER_REQUEST) {
+    return NextResponse.json(
+      { error: `Too many files. Upload up to ${MAX_FLYER_FILES_PER_REQUEST} files at a time.` },
+      { status: 400 }
+    );
+  }
+  const oversize = files.filter((f) => f.size > MAX_FLYER_FILE_BYTES);
+  if (oversize.length > 0) {
+    return NextResponse.json(
+      {
+        error: `One or more files are too large. Keep each file under ${Math.floor(MAX_FLYER_FILE_BYTES / (1024 * 1024))}MB.`,
+        files: oversize.map((f) => f.name),
+      },
+      { status: 413 }
+    );
+  }
 
   const createdFlyers: Array<{
     id: string;
@@ -253,6 +272,13 @@ export async function POST(req: NextRequest) {
     });
 
     createdFlyers.push(flyer);
+  }
+
+  if (createdFlyers.length === 0) {
+    return NextResponse.json(
+      { error: "No supported files detected. Upload images or PDF flyers." },
+      { status: 400 }
+    );
   }
 
   return NextResponse.json({ flyers: createdFlyers });

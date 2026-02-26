@@ -37,6 +37,45 @@ function formatRelativeDate(input: Date) {
   return input.toLocaleDateString("en-CA", { month: "short", day: "numeric" });
 }
 
+type ActivityComparable = {
+  price?: number;
+  weight?: "local" | "reference";
+};
+
+type ActivityPayload = {
+  estimatedValueAdd?: number;
+  confidence?: string;
+  comparablesSummary?: string;
+  comparables?: ActivityComparable[];
+  usedWebSearch?: boolean;
+};
+
+function compactText(input: string, max = 180) {
+  const clean = input.replace(/\s+/g, " ").trim();
+  if (clean.length <= max) return clean;
+  return `${clean.slice(0, max - 1).trim()}…`;
+}
+
+function tryParseActivityPayload(raw?: string | null): ActivityPayload | null {
+  if (!raw?.trim()) return null;
+  const text = raw.trim();
+  if (!(text.startsWith("{") || text.startsWith("["))) return null;
+  try {
+    return JSON.parse(text) as ActivityPayload;
+  } catch {
+    return null;
+  }
+}
+
+function formatPriceRange(values: number[]) {
+  const valid = values.filter((n) => Number.isFinite(n) && n > 0);
+  if (valid.length === 0) return null;
+  const min = Math.min(...valid);
+  const max = Math.max(...valid);
+  if (min === max) return formatCurrency(min);
+  return `${formatCurrency(min)}-${formatCurrency(max)}`;
+}
+
 export default async function ProjectsPage() {
   const session = await getServerSession(authOptions);
   if (!session?.user) return null;
@@ -99,6 +138,35 @@ export default async function ProjectsPage() {
     .slice(0, 3);
 
   const latestEstimateValue = latestEstimate?.confirmedAmount ?? latestEstimate?.grandTotal;
+  const recentActivity = recentFlipSearches.map((search) => {
+    const payload = tryParseActivityPayload(search.comparablesFound);
+    const localPrices =
+      payload?.comparables
+        ?.filter((c) => c.weight !== "reference")
+        .map((c) => Number(c.price))
+        .filter((n) => Number.isFinite(n) && n > 0) ?? [];
+    const refPrices =
+      payload?.comparables
+        ?.filter((c) => c.weight === "reference")
+        .map((c) => Number(c.price))
+        .filter((n) => Number.isFinite(n) && n > 0) ?? [];
+    const localRange = formatPriceRange(localPrices);
+    const refRange = formatPriceRange(refPrices);
+    const summary =
+      payload?.comparablesSummary && payload.comparablesSummary.trim()
+        ? compactText(payload.comparablesSummary, 210)
+        : search.comparablesFound
+          ? compactText(search.comparablesFound, 210)
+          : null;
+    return {
+      ...search,
+      payload,
+      localRange,
+      refRange,
+      summary,
+      comparableCount: payload?.comparables?.length ?? 0,
+    };
+  });
 
   return (
     <div className="space-y-8">
@@ -179,11 +247,11 @@ export default async function ProjectsPage() {
             <CardDescription>Latest flip intelligence and comparables context</CardDescription>
           </CardHeader>
           <CardContent>
-            {recentFlipSearches.length === 0 ? (
+            {recentActivity.length === 0 ? (
               <p className="text-sm text-slate-500">No flip searches yet. Run one from a project to populate this feed.</p>
             ) : (
               <ul className="space-y-3">
-                {recentFlipSearches.map((search) => (
+                {recentActivity.map((search) => (
                   <li key={search.id} className="rounded-lg border border-slate-200 p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <Link
@@ -202,9 +270,40 @@ export default async function ProjectsPage() {
                       <Badge variant="outline" className="capitalize">
                         {search.marketType ? search.marketType.replace("_", " ") : "market type pending"}
                       </Badge>
+                      {typeof search.payload?.estimatedValueAdd === "number" && (
+                        <Badge variant="outline" className="text-emerald-700 border-emerald-300 bg-emerald-50">
+                          Value add {formatCurrency(search.payload.estimatedValueAdd)}
+                        </Badge>
+                      )}
+                      {search.payload?.confidence && (
+                        <Badge variant="outline" className="capitalize">
+                          {search.payload.confidence} confidence
+                        </Badge>
+                      )}
+                      {search.payload?.usedWebSearch && (
+                        <Badge variant="outline">web-backed</Badge>
+                      )}
                     </div>
-                    {search.comparablesFound && (
-                      <p className="mt-2 text-xs text-slate-600 line-clamp-2">{search.comparablesFound}</p>
+                    {(search.localRange || search.refRange || search.comparableCount > 0) && (
+                      <div className="mt-2 text-xs text-slate-600 space-y-0.5">
+                        {search.localRange && (
+                          <p>
+                            <span className="font-medium text-slate-700">Local:</span> {search.project.address.split(",")[0]} {search.localRange}
+                          </p>
+                        )}
+                        <p>
+                          <span className="font-medium text-slate-700">Reference:</span>{" "}
+                          {search.refRange ?? "None"}
+                        </p>
+                        {search.comparableCount > 0 && (
+                          <p>
+                            <span className="font-medium text-slate-700">Comparables:</span> {search.comparableCount}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {search.summary && (
+                      <p className="mt-2 text-xs text-slate-600 line-clamp-3">{search.summary}</p>
                     )}
                   </li>
                 ))}
