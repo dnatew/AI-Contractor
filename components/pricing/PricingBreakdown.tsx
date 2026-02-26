@@ -60,6 +60,24 @@ type AiLoadingMode =
   | "deepDiveRun"
   | "laborSearch";
 
+const BUILTIN_LOADING_ANIMATION =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="360" height="180" viewBox="0 0 360 180">
+      <rect width="100%" height="100%" rx="16" fill="#f8fafc"/>
+      <text x="180" y="76" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" fill="#334155">AI is thinking</text>
+      <circle cx="156" cy="108" r="7" fill="#64748b">
+        <animate attributeName="opacity" values="0.2;1;0.2" dur="1.2s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="180" cy="108" r="7" fill="#64748b">
+        <animate attributeName="opacity" values="0.2;1;0.2" dur="1.2s" begin="0.2s" repeatCount="indefinite"/>
+      </circle>
+      <circle cx="204" cy="108" r="7" fill="#64748b">
+        <animate attributeName="opacity" values="0.2;1;0.2" dur="1.2s" begin="0.4s" repeatCount="indefinite"/>
+      </circle>
+    </svg>`
+  );
+
 const AI_LOADING_META: Record<
   AiLoadingMode,
   {
@@ -72,37 +90,37 @@ const AI_LOADING_META: Record<
   wizard: {
     title: "Preparing AI questions",
     description: "Building a short questionnaire to refine pricing decisions.",
-    gifPath: "/uploads/typing-cat-typing.gif",
+    gifPath: "/ai-loading/typing-cat-typing.gif",
     statuses: ["Reading your project context...", "Drafting targeted questions...", "Finalizing prompts..."],
   },
   estimate: {
     title: "Generating estimate",
     description: "Combining scope, labor signals, and material logic.",
-    gifPath: "/uploads/typing-cat-typing.gif",
+    gifPath: "/ai-loading/typing-cat-typing.gif",
     statuses: ["Analyzing scope items...", "Blending labor and material rates...", "Assembling line items..."],
   },
   reprice: {
     title: "Checking cost numbers",
     description: "Re-checking item costs with supplier-backed signals.",
-    gifPath: "/uploads/typing-cat-typing.gif",
+    gifPath: "/ai-loading/typing-cat-typing.gif",
     statuses: ["Reviewing current estimate...", "Comparing pricing evidence...", "Updating material assumptions..."],
   },
   deepDiveQuestions: {
     title: "Preparing deep dive",
     description: "Generating focused questions for this estimate line.",
-    gifPath: "/uploads/typing-cat-typing.gif",
+    gifPath: "/ai-loading/typing-cat-typing.gif",
     statuses: ["Understanding this line item...", "Building targeted follow-ups...", "Preparing your deep dive..."],
   },
   deepDiveRun: {
     title: "Running AI deep dive",
     description: "Researching this item and updating supporting references.",
-    gifPath: "/uploads/typing-cat-typing.gif",
+    gifPath: "/ai-loading/typing-cat-typing.gif",
     statuses: ["Searching relevant sources...", "Comparing cost scenarios...", "Writing insights and links..."],
   },
   laborSearch: {
     title: "Searching labor rates",
     description: "Pulling area/province signals for sqft labor benchmarks.",
-    gifPath: "/uploads/typing-cat-typing.gif",
+    gifPath: "/ai-loading/typing-cat-typing.gif",
     statuses: ["Finding local labor references...", "Normalizing rate formats...", "Preparing suggested ranges..."],
   },
 };
@@ -132,11 +150,13 @@ function AiLoadingModal({
   const [statusIndex, setStatusIndex] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [imageFailed, setImageFailed] = useState(false);
+  const [gifSrc, setGifSrc] = useState(BUILTIN_LOADING_ANIMATION);
 
   useEffect(() => {
     setStatusIndex(0);
     setElapsedMs(0);
     setImageFailed(false);
+    setGifSrc(mode ? AI_LOADING_META[mode].gifPath : BUILTIN_LOADING_ANIMATION);
     if (!open || !mode) return;
     const statusTimer = window.setInterval(() => {
       setStatusIndex((prev) => prev + 1);
@@ -171,10 +191,16 @@ function AiLoadingModal({
               </div>
             ) : (
               <img
-                src={meta.gifPath}
+                src={gifSrc}
                 alt={`${meta.title} animation`}
                 className="max-h-32 w-auto object-contain"
-                onError={() => setImageFailed(true)}
+                onError={() => {
+                  if (gifSrc !== BUILTIN_LOADING_ANIMATION) {
+                    setGifSrc(BUILTIN_LOADING_ANIMATION);
+                    return;
+                  }
+                  setImageFailed(true);
+                }}
               />
             )}
           </div>
