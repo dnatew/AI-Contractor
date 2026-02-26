@@ -408,86 +408,112 @@ export function FlyerLibraryCard() {
                 />
 
                 {expanded[flyer.id] && (
-                  <div className="space-y-2">
-                    {flyer.items.length === 0 ? (
-                      <p className="text-xs text-slate-500">
-                        No rows extracted. You can still keep this flyer for reference.
-                      </p>
-                    ) : (
-                      <div className="space-y-2">
-                        <div className="grid gap-2 md:grid-cols-12 px-2 text-[11px] uppercase tracking-wide text-slate-500">
-                          <div className="md:col-span-4">Item</div>
-                          <div className="md:col-span-2">Unit</div>
-                          <div className="md:col-span-2">Price (CAD)</div>
-                          <div className="md:col-span-3">Use / notes</div>
-                          <div className="md:col-span-1 text-right">Remove</div>
-                        </div>
-                        {flyer.items.map((item) => (
-                          <div
-                            key={item.id}
-                            className="rounded border border-slate-200 bg-white p-2 grid gap-2 md:grid-cols-12"
-                          >
-                            <div className="md:col-span-4">
-                              <Input
-                                defaultValue={item.name}
-                                onBlur={(e) => {
-                                  const next = e.target.value.trim();
-                                  if (next && next !== item.name) {
-                                    void patchItem(item.id, { name: next });
-                                  }
-                                }}
-                              />
-                            </div>
-                            <div className="md:col-span-2">
-                              <Input
-                                defaultValue={item.unitLabel ?? ""}
-                                placeholder="Unit"
-                                onBlur={(e) => {
-                                  const next = e.target.value.trim();
-                                  if (next !== (item.unitLabel ?? "")) {
-                                    void patchItem(item.id, { unitLabel: next || null });
-                                  }
-                                }}
-                              />
-                            </div>
-                            <div className="md:col-span-2">
-                              <Input
-                                type="number"
-                                defaultValue={Number(item.price)}
-                                onBlur={(e) => {
-                                  const next = Number(e.target.value);
-                                  if (Number.isFinite(next) && next > 0 && next !== item.price) {
-                                    void patchItem(item.id, { price: next });
-                                  }
-                                }}
-                              />
-                            </div>
-                            <div className="md:col-span-3">
-                              <Input
-                                defaultValue={item.promoNotes ?? ""}
-                                placeholder="Notes"
-                                onBlur={(e) => {
-                                  const next = e.target.value.trim();
-                                  if (next !== (item.promoNotes ?? "")) {
-                                    void patchItem(item.id, { promoNotes: next || null });
-                                  }
-                                }}
-                              />
-                            </div>
-                            <div className="md:col-span-1 flex items-center justify-end">
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="text-rose-600 hover:text-rose-700 hover:bg-rose-50"
-                                onClick={() => void deleteFlyerItem(item.id)}
-                              >
-                                <Trash2 className="size-3.5" />
-                              </Button>
-                            </div>
+                  <div className="grid gap-3 lg:grid-cols-[minmax(280px,36%)_1fr]">
+                    <div className="rounded border border-slate-200 bg-white p-2">
+                      <p className="text-[11px] uppercase tracking-wide text-slate-500 mb-2">Flyer preview</p>
+                      {isPdfUrl(flyer.imageUrl) ? (
+                        isStoredFlyerUrl(flyer.imageUrl) ? (
+                          <iframe
+                            src={`${flyer.imageUrl}#view=FitH`}
+                            title={flyer.storeName ?? "Flyer PDF preview"}
+                            className="w-full h-[420px] rounded border border-slate-200 bg-slate-50"
+                          />
+                        ) : (
+                          <div className="h-[420px] rounded border border-slate-200 bg-slate-50 flex flex-col items-center justify-center text-slate-500 text-sm">
+                            <ReceiptText className="size-7 mb-2" />
+                            <p>PDF parsed successfully</p>
+                            <p className="text-xs text-slate-400">Preview unavailable in current storage mode</p>
                           </div>
-                        ))}
-                      </div>
-                    )}
+                        )
+                      ) : (
+                        <img
+                          src={flyer.imageUrl}
+                          alt={flyer.storeName ?? "Flyer preview"}
+                          className="w-full h-[420px] rounded border border-slate-200 object-contain bg-slate-50"
+                        />
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      {flyer.items.length === 0 ? (
+                        <p className="text-xs text-slate-500">
+                          No rows extracted. You can still keep this flyer for reference.
+                        </p>
+                      ) : (
+                        <div className="space-y-2">
+                          <div className="grid gap-2 md:grid-cols-12 px-2 text-[11px] uppercase tracking-wide text-slate-500">
+                            <div className="md:col-span-4">Item</div>
+                            <div className="md:col-span-2">Unit</div>
+                            <div className="md:col-span-2">Price (CAD)</div>
+                            <div className="md:col-span-3">Use / notes</div>
+                            <div className="md:col-span-1 text-right">Remove</div>
+                          </div>
+                          {flyer.items.map((item) => (
+                            <div
+                              key={item.id}
+                              className="rounded border border-slate-200 bg-white p-2 grid gap-2 md:grid-cols-12"
+                            >
+                              <div className="md:col-span-4">
+                                <Input
+                                  defaultValue={item.name}
+                                  onBlur={(e) => {
+                                    const next = e.target.value.trim();
+                                    if (next && next !== item.name) {
+                                      void patchItem(item.id, { name: next });
+                                    }
+                                  }}
+                                />
+                              </div>
+                              <div className="md:col-span-2">
+                                <Input
+                                  defaultValue={item.unitLabel ?? ""}
+                                  placeholder="Unit"
+                                  onBlur={(e) => {
+                                    const next = e.target.value.trim();
+                                    if (next !== (item.unitLabel ?? "")) {
+                                      void patchItem(item.id, { unitLabel: next || null });
+                                    }
+                                  }}
+                                />
+                              </div>
+                              <div className="md:col-span-2">
+                                <Input
+                                  type="number"
+                                  defaultValue={Number(item.price)}
+                                  onBlur={(e) => {
+                                    const next = Number(e.target.value);
+                                    if (Number.isFinite(next) && next > 0 && next !== item.price) {
+                                      void patchItem(item.id, { price: next });
+                                    }
+                                  }}
+                                />
+                              </div>
+                              <div className="md:col-span-3">
+                                <Input
+                                  defaultValue={item.promoNotes ?? ""}
+                                  placeholder="Notes"
+                                  onBlur={(e) => {
+                                    const next = e.target.value.trim();
+                                    if (next !== (item.promoNotes ?? "")) {
+                                      void patchItem(item.id, { promoNotes: next || null });
+                                    }
+                                  }}
+                                />
+                              </div>
+                              <div className="md:col-span-1 flex items-center justify-end">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="text-rose-600 hover:text-rose-700 hover:bg-rose-50"
+                                  onClick={() => void deleteFlyerItem(item.id)}
+                                >
+                                  <Trash2 className="size-3.5" />
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
