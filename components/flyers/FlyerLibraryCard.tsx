@@ -28,7 +28,7 @@ type Flyer = {
 const MAX_CLIENT_UPLOAD_BYTES = 4 * 1024 * 1024;
 
 function isPdfUrl(url: string): boolean {
-  return /\.pdf(?:$|\?)/i.test(url);
+  return /^flyer:\/\//i.test(url) || /\.pdf(?:$|\?)/i.test(url);
 }
 
 function toDateInput(dateIso: string | null): string {
@@ -36,6 +36,10 @@ function toDateInput(dateIso: string | null): string {
   const d = new Date(dateIso);
   if (Number.isNaN(d.getTime())) return "";
   return d.toISOString().slice(0, 10);
+}
+
+function isStoredFlyerUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url) || url.startsWith("/");
 }
 
 export function FlyerLibraryCard() {
@@ -319,16 +323,26 @@ export function FlyerLibraryCard() {
               <div key={flyer.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-3">
                 <div className="flex flex-wrap items-start gap-3">
                   {isPdfUrl(flyer.imageUrl) ? (
-                    <a
-                      href={flyer.imageUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="h-20 w-20 rounded-md border border-slate-200 bg-white flex flex-col items-center justify-center text-slate-500 hover:text-blue-600"
-                      title="Open flyer PDF"
-                    >
-                      <ReceiptText className="size-6" />
-                      <span className="text-[10px] mt-1">PDF</span>
-                    </a>
+                    isStoredFlyerUrl(flyer.imageUrl) ? (
+                      <a
+                        href={flyer.imageUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="h-20 w-20 rounded-md border border-slate-200 bg-white flex flex-col items-center justify-center text-slate-500 hover:text-blue-600"
+                        title="Open flyer PDF"
+                      >
+                        <ReceiptText className="size-6" />
+                        <span className="text-[10px] mt-1">PDF</span>
+                      </a>
+                    ) : (
+                      <div
+                        className="h-20 w-20 rounded-md border border-slate-200 bg-white flex flex-col items-center justify-center text-slate-500"
+                        title="PDF parsed for pricing context (file preview unavailable in current storage mode)"
+                      >
+                        <ReceiptText className="size-6" />
+                        <span className="text-[10px] mt-1">PDF</span>
+                      </div>
+                    )
                   ) : (
                     <img
                       src={flyer.imageUrl}

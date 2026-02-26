@@ -222,12 +222,21 @@ export async function POST(req: NextRequest) {
       file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
     if (!file.type.startsWith("image/") && !isPdf) continue;
     const buffer = Buffer.from(await file.arrayBuffer());
-    const imageUrl = await uploadPhoto(
-      buffer,
-      file.name,
-      `flyers-${userId}`,
-      isPdf ? "application/pdf" : file.type || "image/jpeg"
-    );
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    let imageUrl = isPdf
+      ? `flyer://${safeName}`
+      : "/uploads/typing-cat-typing.gif";
+    try {
+      imageUrl = await uploadPhoto(
+        buffer,
+        file.name,
+        `flyers-${userId}`,
+        isPdf ? "application/pdf" : file.type || "image/jpeg"
+      );
+    } catch {
+      // Keep processing even when object/file storage is unavailable in the runtime.
+      // Flyer rows still provide pricing context for estimates/deep dives.
+    }
 
     let extracted: OcrFlyerPayload = { items: [] };
     try {
