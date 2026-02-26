@@ -573,6 +573,68 @@ function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
 
+function inferUnitKind(input?: string | null): "sqft" | "linear" | "each" | "sheet" | "volume" | "other" {
+  const u = String(input ?? "").toLowerCase().trim();
+  if (!u) return "other";
+  if (u.includes("sqft") || u.includes("sq ft") || u.includes("square")) return "sqft";
+  if (u.includes("linear") || u === "lf" || u.includes("lineal")) return "linear";
+  if (u.includes("sheet") || u.includes("panel")) return "sheet";
+  if (
+    u.includes("gallon") ||
+    u.includes("litre") ||
+    u.includes("liter") ||
+    u.includes("ml") ||
+    u.includes("l ")
+  ) return "volume";
+  if (
+    u.includes("each") ||
+    u.includes("unit") ||
+    u.includes("set") ||
+    u.includes("room") ||
+    u.includes("house") ||
+    u.includes("pack") ||
+    u.includes("box") ||
+    u.includes("piece")
+  ) return "each";
+  return "other";
+}
+
+function isFlyerUnitCompatible(
+  estimateUnit: string,
+  flyerUnitLabel?: string | null,
+  task?: string,
+  materialName?: string
+): boolean {
+  const estimateKind = inferUnitKind(estimateUnit);
+  const flyerKind = inferUnitKind(flyerUnitLabel);
+  if (estimateKind === "sqft") return flyerKind === "sqft";
+  if (estimateKind === "linear") return flyerKind === "linear";
+  if (estimateKind === "sheet") return flyerKind === "sheet" || flyerKind === "each";
+  if (estimateKind === "volume") return flyerKind === "volume" || flyerKind === "each";
+  if (estimateKind === "each") return flyerKind === "each" || flyerKind === "other";
+  const text = `${task ?? ""} ${materialName ?? ""}`.toLowerCase();
+  // For ambiguous estimate units, be conservative for paint and drywall.
+  if (/paint|primer|drywall|mud|compound/.test(text) && flyerKind === "other") return false;
+  return true;
+}
+
+function getMaterialUnitCapForLine(task: string, segment: string, materialName: string, unit: string): number | null {
+  const kind = inferUnitKind(unit);
+  const text = `${task} ${segment} ${materialName}`.toLowerCase();
+  if (kind === "sqft") {
+    if (/paint|primer/.test(text)) return 3.5;
+    if (/drywall|mud|compound|taping/.test(text)) return 6.5;
+    if (/tile|porcelain|ceramic|backsplash|shower/.test(text)) return 18;
+    if (/floor|vinyl|laminate|hardwood|lvp|lvt|plank/.test(text)) return 15;
+    return 12;
+  }
+  if (kind === "linear") {
+    if (/trim|baseboard|casing/.test(text)) return 12;
+    return 25;
+  }
+  return null;
+}
+
 function extractPreferredMaterialUnitCap(itemAnswers: Record<string, string>): number | null {
   const entries = Object.entries(itemAnswers ?? {});
   if (entries.length === 0) return null;
@@ -1452,6 +1514,15 @@ Rules:
       materialUnitCost = fallbackMaterialUnit;
       fallbackMaterialCount += 1;
     }
+    if (typeof override.materialUnitCost !== "number") {
+      const materialCap = getMaterialUnitCapForLine(line.task, line.segment, materialName, line.unit);
+      if (materialCap && materialUnitCost > materialCap) {
+        pushLineWarning(
+          `Capped material rate for "${line.task}" at ${materialCap.toFixed(2)}/${line.unit} due to unit/category guardrails.`
+        );
+        materialUnitCost = materialCap;
+      }
+    }
     let materialCost = quantity * materialUnitCost;
     const materialFloor = estimateMaterialFloorTotal({
       task: line.task,
@@ -1749,7 +1820,10 @@ Rules:
         if (mode === "item_reprice" && requestedScopeItemId && l.scopeItemId !== requestedScopeItemId) continue;
         const m = materialMap.get(l.scopeItemId);
         const flyerMatches = flyerMatchesByScopeItem.get(l.scopeItemId) ?? [];
-        const flyerPrices = flyerMatches
+        const compatibleFlyerMatches = flyerMatches.filter((x) =>
+          isFlyerUnitCompatible(l.unit, x.unitLabel, l.task, l.materialName ?? l.material)
+        );
+        const flyerPrices = compatibleFlyerMatches
           .map((x) => Number(x.price))
           .filter((x) => Number.isFinite(x) && x > 0 && x < 100000);
         const flyerAvg = average(flyerPrices);
@@ -1790,6 +1864,13 @@ Rules:
               l.materialUnitCost = Math.min(l.materialUnitCost, 25);
             }
           }
+          const materialCap = getMaterialUnitCapForLine(l.task, l.segment, l.materialName ?? l.material, l.unit);
+          if (materialCap && l.materialUnitCost > materialCap) {
+            l.materialUnitCost = materialCap;
+            pushLineWarning(
+              `Guardrail capped "${l.task}" to ${materialCap.toFixed(2)}/${l.unit} during material reprice.`
+            );
+          }
           l.materialCost = (l.quantity ?? 0) * l.materialUnitCost;
           l.subtotal = (l.laborCost ?? 0) + l.materialCost;
           l.markup = l.subtotal * MARKUP_PERCENT;
@@ -1808,7 +1889,7 @@ Rules:
               url: it.sourceUrl ?? "",
               price: it.unitCost,
             })),
-            ...flyerMatches.map((f) => ({
+            ...compatibleFlyerMatches.map((f) => ({
               label: `Flyer: ${f.name} (${f.flyer?.storeName ?? "local store"})`,
               url: f.flyer?.imageUrl ?? "",
               price: f.price,
@@ -1825,8 +1906,8 @@ Rules:
             links,
           });
           const flyerNote =
-            flyerMatches.length > 0
-              ? ` Includes ${flyerMatches.length} local flyer match(es).`
+            compatibleFlyerMatches.length > 0
+              ? ` Includes ${compatibleFlyerMatches.length} local flyer match(es).`
               : "";
           itemInsights[l.scopeItemId] = {
             summary: (m.notes || "AI deep-dive supplier reprice.") + flyerNote,
@@ -1834,7 +1915,7 @@ Rules:
             imageUrl: m.imageUrl,
             updatedAt: new Date().toISOString(),
           };
-        } else if (flyerMatches.length > 0 && flyerAvg && flyerAvg > 0) {
+        } else if (compatibleFlyerMatches.length > 0 && flyerAvg && flyerAvg > 0) {
           const unitLower = (l.unit ?? "").toLowerCase();
           const currentUnit = l.materialUnitCost > 0 ? l.materialUnitCost : flyerAvg;
           const maxMultiplier = unitLower.includes("sqft") || unitLower.includes("sq ft") ? 2.2 : 3.0;
@@ -1842,13 +1923,20 @@ Rules:
           if (preferredMaterialUnitCap && preferredMaterialUnitCap > 0) {
             l.materialUnitCost = Math.min(l.materialUnitCost, preferredMaterialUnitCap);
           }
+          const materialCap = getMaterialUnitCapForLine(l.task, l.segment, l.materialName ?? l.material, l.unit);
+          if (materialCap && l.materialUnitCost > materialCap) {
+            l.materialUnitCost = materialCap;
+            pushLineWarning(
+              `Guardrail capped "${l.task}" to ${materialCap.toFixed(2)}/${l.unit} from flyer-based repricing.`
+            );
+          }
           l.materialCost = (l.quantity ?? 0) * l.materialUnitCost;
           l.subtotal = (l.laborCost ?? 0) + l.materialCost;
           l.markup = l.subtotal * MARKUP_PERCENT;
           l.tax = (l.subtotal + l.markup) * (baselineResult.assumptions.taxRate ?? 0);
           l.total = l.subtotal + l.markup + l.tax;
           const links = dedupeReferenceLinks(
-            flyerMatches.map((f) => ({
+            compatibleFlyerMatches.map((f) => ({
               label: `Flyer: ${f.name} (${f.flyer?.storeName ?? "local store"})`,
               url: f.flyer?.imageUrl ?? "",
               price: f.price,
@@ -1864,7 +1952,7 @@ Rules:
             links,
           });
           itemInsights[l.scopeItemId] = {
-            summary: `Repriced from local flyer library (${flyerMatches.length} match${flyerMatches.length > 1 ? "es" : ""}).`,
+            summary: `Repriced from local flyer library (${compatibleFlyerMatches.length} match${compatibleFlyerMatches.length > 1 ? "es" : ""}).`,
             links,
             updatedAt: new Date().toISOString(),
           };
