@@ -557,18 +557,6 @@ function isDemolitionLike(task: string, segment: string, material: string) {
   return /demo|demolition|tear\s?out|remove|removal|strip\s?out|gut|disposal/.test(text);
 }
 
-function percentile75(values: number[]): number | null {
-  if (!values.length) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const idx = Math.min(sorted.length - 1, Math.floor(0.75 * (sorted.length - 1)));
-  return sorted[idx];
-}
-
-function average(values: number[]): number | null {
-  if (!values.length) return null;
-  return values.reduce((s, n) => s + n, 0) / values.length;
-}
-
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
@@ -1159,7 +1147,6 @@ export async function POST(req: NextRequest) {
       flyerHints: (flyerMatchesByScopeForEstimate.get(i.id) ?? []).slice(0, 3).map((m) => ({
         name: m.name,
         unitLabel: m.unitLabel,
-        price: m.price,
         promoNotes: m.promoNotes,
         storeName: m.flyer?.storeName ?? null,
       })),
@@ -1209,7 +1196,7 @@ Rules:
 - Keep quantity/unit aligned with the line intent.
 - For labor/material, use user pricing benchmarks first; if missing, infer best judgment from similar categories and project context.
 - For sqft lines, anchor labor to category sqft benchmarks when possible.
-- When flyerHints exist on a line, treat them as strong local pricing evidence for material selections and unit costs.
+- When flyerHints exist on a line, use them only as product relevance/context hints (naming/spec fit), NOT as price anchors.
 - Avoid token placeholder values and unrealistic micro-costs.
 - Always provide realistic laborRate (hourly) and materialUnitCost (>0) for every line.
 - For non-sqft lines, laborHours × laborRate should produce a practical labor total for the scope line.
@@ -1271,7 +1258,6 @@ Rules:
         flyerHints: (flyerMatchesByScopeForEstimate.get(s.id) ?? []).slice(0, 3).map((m) => ({
           name: m.name,
           unitLabel: m.unitLabel,
-          price: m.price,
           promoNotes: m.promoNotes,
           storeName: m.flyer?.storeName ?? null,
         })),
@@ -1304,7 +1290,7 @@ ${JSON.stringify({
 Rules:
 - Fill realistic laborHours/laborRate/materialUnitCost for each weak line.
 - Prioritize user pricing benchmarks where applicable.
-- Use flyerHints as local context when relevant to the weak line material/task.
+- Use flyerHints as product context only; do not use flyer values as numeric pricing anchors.
 - If uncertain, infer practical mid-range values for MB/Canada.
 - materialUnitCost must be > 0; laborHours must be >= 0; laborRate must be >= 30 for skilled trades.`,
           },
@@ -1674,10 +1660,10 @@ Rules:
           const matches = flyerMatchesByScopeItem.get(line.scopeItemId) ?? [];
           if (matches.length === 0) return "";
           return [
-            `Line ${line.scopeItemId} (${line.task}) local flyer evidence:`,
+            `Line ${line.scopeItemId} (${line.task}) related flyer items (reference only):`,
             ...matches.map(
               (m) =>
-                `- ${m.name} @ ${m.price.toFixed(2)} CAD${m.unitLabel ? ` / ${m.unitLabel}` : ""} (${m.flyer?.storeName ?? "store unknown"}${m.flyer?.releaseDate ? `, release ${m.flyer.releaseDate.toISOString().slice(0, 10)}` : ""})`
+                `- ${m.name}${m.unitLabel ? ` (${m.unitLabel})` : ""} (${m.flyer?.storeName ?? "store unknown"}${m.flyer?.releaseDate ? `, release ${m.flyer.releaseDate.toISOString().slice(0, 10)}` : ""})`
             ),
           ].join("\n");
         })
@@ -1716,7 +1702,7 @@ Rules:
         "3) Decide final material unit cost with concise rationale and references.",
         "Output concise, practical, explainable numbers.",
         "If item clarifications include a preferred/budget max material cost per unit (e.g., per sqft), treat it as a hard cap unless it is clearly infeasible, and explicitly explain any exception in notes.",
-        "Use matched local flyer prices as a preferred signal before broad web sources when they are relevant to the line item.",
+        "Use matched flyer items only as relevance hints for product type; never use flyer values as direct pricing anchors.",
         "PRIORITY SOURCES: Home Depot Canada (homedepot.ca) and RONA Canada (rona.ca). Use those first. If evidence is sparse, infer conservatively from similar items in those sources.",
         `Project: ${project.address}, ${project.province}, ${project.sqft} sqft`,
         `Scope lines:\n${targetLines
@@ -1823,19 +1809,8 @@ Rules:
         const compatibleFlyerMatches = flyerMatches.filter((x) =>
           isFlyerUnitCompatible(l.unit, x.unitLabel, l.task, l.materialName ?? l.material)
         );
-        const flyerPrices = compatibleFlyerMatches
-          .map((x) => Number(x.price))
-          .filter((x) => Number.isFinite(x) && x > 0 && x < 100000);
-        const flyerAvg = average(flyerPrices);
-        const flyerP75 = percentile75(flyerPrices);
         if (m && typeof m.materialUnitCost === "number" && m.materialUnitCost > 0) {
-          let aiMaterialUnit = m.materialUnitCost;
-          if (flyerAvg && Number.isFinite(flyerAvg)) {
-            // Blend LLM + local flyer evidence so flyer library materially influences deep-dive output.
-            aiMaterialUnit = aiMaterialUnit * 0.7 + flyerAvg * 0.3;
-          } else if (!Number.isFinite(aiMaterialUnit) || aiMaterialUnit <= 0) {
-            aiMaterialUnit = flyerAvg ?? aiMaterialUnit;
-          }
+          const aiMaterialUnit = m.materialUnitCost;
           const currentUnit = l.materialUnitCost > 0 ? l.materialUnitCost : 1;
           const unitLower = (l.unit ?? "").toLowerCase();
           const maxMultiplier = unitLower.includes("sqft") || unitLower.includes("sq ft")
@@ -1847,9 +1822,6 @@ Rules:
           const minAllowed = currentUnit * minMultiplier;
           const maxAllowed = currentUnit * maxMultiplier;
           l.materialUnitCost = clamp(aiMaterialUnit, minAllowed, maxAllowed);
-          if (flyerP75 && Number.isFinite(flyerP75) && flyerP75 > 0) {
-            l.materialUnitCost = Math.min(l.materialUnitCost, flyerP75 * 1.2);
-          }
           if (preferredMaterialUnitCap && Number.isFinite(preferredMaterialUnitCap) && preferredMaterialUnitCap > 0) {
             // Respect deep-dive user budget/preference for material unit pricing when provided.
             l.materialUnitCost = Math.min(l.materialUnitCost, preferredMaterialUnitCap);
@@ -1913,47 +1885,6 @@ Rules:
             summary: (m.notes || "AI deep-dive supplier reprice.") + flyerNote,
             links,
             imageUrl: m.imageUrl,
-            updatedAt: new Date().toISOString(),
-          };
-        } else if (compatibleFlyerMatches.length > 0 && flyerAvg && flyerAvg > 0) {
-          const unitLower = (l.unit ?? "").toLowerCase();
-          const currentUnit = l.materialUnitCost > 0 ? l.materialUnitCost : flyerAvg;
-          const maxMultiplier = unitLower.includes("sqft") || unitLower.includes("sq ft") ? 2.2 : 3.0;
-          l.materialUnitCost = clamp(flyerAvg, currentUnit * 0.35, currentUnit * maxMultiplier);
-          if (preferredMaterialUnitCap && preferredMaterialUnitCap > 0) {
-            l.materialUnitCost = Math.min(l.materialUnitCost, preferredMaterialUnitCap);
-          }
-          const materialCap = getMaterialUnitCapForLine(l.task, l.segment, l.materialName ?? l.material, l.unit);
-          if (materialCap && l.materialUnitCost > materialCap) {
-            l.materialUnitCost = materialCap;
-            pushLineWarning(
-              `Guardrail capped "${l.task}" to ${materialCap.toFixed(2)}/${l.unit} from flyer-based repricing.`
-            );
-          }
-          l.materialCost = (l.quantity ?? 0) * l.materialUnitCost;
-          l.subtotal = (l.laborCost ?? 0) + l.materialCost;
-          l.markup = l.subtotal * MARKUP_PERCENT;
-          l.tax = (l.subtotal + l.markup) * (baselineResult.assumptions.taxRate ?? 0);
-          l.total = l.subtotal + l.markup + l.tax;
-          const links = dedupeReferenceLinks(
-            compatibleFlyerMatches.map((f) => ({
-              label: `Flyer: ${f.name} (${f.flyer?.storeName ?? "local store"})`,
-              url: f.flyer?.imageUrl ?? "",
-              price: f.price,
-            }))
-          )
-            .filter((x) => x.url && (/^https?:\/\//.test(x.url) || x.url.startsWith("/")))
-            .slice(0, 3);
-          repriceReferences.push({
-            scopeItemId: l.scopeItemId,
-            task: l.task,
-            materialUnitCost: l.materialUnitCost,
-            notes: "Repriced from local flyer library matches.",
-            links,
-          });
-          itemInsights[l.scopeItemId] = {
-            summary: `Repriced from local flyer library (${compatibleFlyerMatches.length} match${compatibleFlyerMatches.length > 1 ? "es" : ""}).`,
-            links,
             updatedAt: new Date().toISOString(),
           };
         }
